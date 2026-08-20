@@ -1,7 +1,7 @@
 """Sign in to ArcGIS Portal, or inspect and clear the cached token.
 
 Authentication is the part of this workflow most likely to need attention, and
-it used to be reachable only by running the whole relocation job. This drives it
+it used to be reachable only by running the whole evaluation. This drives it
 on its own.
 
     python scripts/arcgis_signin.py                # sign in if needed
@@ -18,8 +18,8 @@ import sys
 
 from _bootstrap import config
 
-from leakrelocation import auth
-from leakrelocation.output import log, step
+from pipelineinsertion import auth
+from pipelineinsertion.output import log, step
 
 
 def describe_configuration():
@@ -86,9 +86,9 @@ def check_redirect(session):
 def test_query(session):
     """A token that cannot query a layer is not working, whatever its status."""
     step("Test query")
-    log(f"  {config.DISTRIBUTION_PIPE_URL}")
+    log(f"  {config.MAIN_LINES_URL}")
     try:
-        count = auth.authenticated_count(session, config.DISTRIBUTION_PIPE_URL)
+        count = auth.authenticated_count(session, config.MAIN_LINES_URL)
     except Exception as exc:  # noqa: BLE001 - reported, not raised
         log(f"  FAILED: {exc}")
         return False

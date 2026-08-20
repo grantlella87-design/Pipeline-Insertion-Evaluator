@@ -14,7 +14,7 @@ _PACKAGE_PARENT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 if _PACKAGE_PARENT not in _sys.path:
     _sys.path.insert(0, _PACKAGE_PARENT)
 
-from leakrelocation import config
+from pipelineinsertion import config
 
 
 def log(text):
@@ -34,7 +34,7 @@ def fail(text):
 
 
 def detail(text):
-    """Diagnostic output. Hidden unless LEAKRELOCATION_VERBOSE is set.
+    """Diagnostic output. Hidden unless PIPEINSERT_VERBOSE is set.
 
     Field resolution, TLS/proxy setup and outFields lists are useful when
     something is wrong and noise the rest of the time.

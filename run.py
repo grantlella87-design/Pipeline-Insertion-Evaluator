@@ -1,24 +1,15 @@
-"""One command: sign in, download, decode, match, write, and open the map.
+"""One command: sign in, download, evaluate, write, and open the map.
 
     python run.py                    everything, then serve the map
     python run.py --no-view          stop after the GeoPackage
     python run.py --view-only        just serve the map
-    python run.py --refresh          ignore the layer caches
+    python run.py --refresh          ignore the layer cache
     python run.py --port 8800        serve on another port
 
-Each stage used to be its own command in a particular order, and getting the
-order wrong produced a failure that named the next command to run:
-
-    RuntimeError: distribution: material is missing, so this cache is not
-    ASSETTYPE-enriched. Run: python scripts/enrich_assettype_cache.py.
-
-The material decode now happens inside the workflow, so there is no order left
-to get wrong. The individual scripts still work on their own - this drives them.
-
-The map is src/leaflet_bbox_server.py, which shows the distribution and service
-pipes coloured by material along with the leaks, the relocated points and the
-trace lines. There used to be a second, static map and a --pipes flag to reach
-the pipes at all; that map showed a subset of this one and has been removed.
+The evaluator is src/pipeline_insertion_evaluator.py and the map is
+src/leaflet_bbox_server.py, which draws the Lower Pressure systems, the Other
+Pressure systems they could be inserted into, the shortest connection path
+between each pair and the candidates that passed both final tests.
 """
 import argparse
 import os
@@ -31,10 +22,8 @@ for folder in ("src", "scripts"):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from leakrelocation import config
-from leakrelocation.output import fail, log, step, warn
-
-PIPE_CACHES = ("distribution_pipes", "service_pipes")
+from pipelineinsertion import config
+from pipelineinsertion.output import fail, log, step, warn
 
 
 def parse_args(argv=None):
@@ -43,9 +32,9 @@ def parse_args(argv=None):
     parser.add_argument("--no-view", action="store_true",
                         help="Stop after writing the GeoPackage.")
     parser.add_argument("--view-only", action="store_true",
-                        help="Skip the workflow and serve the map.")
+                        help="Skip the evaluation and serve the map.")
     parser.add_argument("--refresh", action="store_true",
-                        help="Ignore the layer caches and re-download.")
+                        help="Ignore the layer cache and re-download.")
     parser.add_argument("--port", type=int, default=None,
                         help="Port for the map. Default: the map server's own.")
     parser.add_argument("--no-browser", action="store_true",
@@ -58,63 +47,44 @@ def parse_args(argv=None):
 def check_signin():
     """Prove the token works before anything long starts.
 
-    A sign-in problem used to surface part-way through a download, after minutes
-    of waiting.
+    A sign-in problem otherwise surfaces part-way through a download, after
+    minutes of waiting.
     """
     step("Checking the ArcGIS token")
-    from leakrelocation import auth
+    from pipelineinsertion import auth
 
     session = auth.make_session()
-    token = auth.get_arcgis_token(session)
-    if not token:
+    if not auth.get_arcgis_token(session):
         fail("No ArcGIS token. Run: python scripts/arcgis_signin.py --check")
 
-    count = auth.authenticated_count(session, config.DISTRIBUTION_PIPE_URL)
+    count = auth.authenticated_count(session, config.MAIN_LINES_URL)
     if count is None:
         fail("The token was rejected by the service. "
              "Run: python scripts/arcgis_signin.py --force")
-    log(f"Token accepted. Distribution pipe layer reports {count:,} features.")
+    log(f"Token accepted. Main Lines reports {count:,} features.")
 
 
 def run_workflow(refresh):
-    """Download, decode the material from ASSETTYPE, match, and write."""
-    step("Running the relocation workflow")
+    step("Running the insertion evaluator")
     if refresh:
         os.environ["FORCE_LAYER_REFRESH"] = "1"
-        log("FORCE_LAYER_REFRESH=1: caches will be ignored.")
+        log("FORCE_LAYER_REFRESH=1: the layer cache will be ignored.")
 
-    import leak_relocation_geopandas as workflow
+    import pipeline_insertion_evaluator as workflow
 
     workflow.main()
     return Path(config.OUTPUT_GPKG)
 
 
-def missing_pipe_caches():
-    """Which pipe caches the map needs and does not have."""
-    return [name for name in PIPE_CACHES
-            if not (config.LAYER_CACHE_DIR / f"{name}.pkl.gz").exists()]
-
-
 def serve_map(port, open_browser):
     """Serve the map with src/leaflet_bbox_server.py.
 
-    That module is the map viewer, and this always runs it. It used to refuse when
-    a pipe cache was missing, which on a fresh checkout - which has no caches -
-    meant no map at all, and a traceback instead of a viewer. A layer with no
-    source is empty now and says why, both here and on the page itself.
-
-    The pipe layers are read from the downloaded caches and served by bounding
-    box, a capped number of features at a time, because they are far too large to
-    write into one GeoJSON and hand to a browser.
+    A layer with no source is empty and says why, both here and on the page, so
+    a fresh checkout with no GeoPackage still gets a map rather than a
+    traceback.
     """
     step("Serving the map")
     import leaflet_bbox_server as map_server
-
-    missing = missing_pipe_caches()
-    if missing:
-        warn(f"No downloaded cache for {missing} in {config.LAYER_CACHE_DIR}, so "
-             f"those pipe layers will be empty. Everything else still draws. "
-             f"To fill them: python run.py --no-view")
 
     map_server.serve(port=port or map_server.PORT, open_browser=open_browser)
 
@@ -125,7 +95,7 @@ def main(argv=None):
     if args.no_view and args.view_only:
         fail("--no-view and --view-only ask for opposite things.")
 
-    log("=== LeakRelocation ===")
+    log("=== LPP GSEP Pipeline Insertion Evaluator ===")
     log(f"GeoPackage: {config.OUTPUT_GPKG}")
     log(f"Layer cache: {config.LAYER_CACHE_DIR}")
 
@@ -137,8 +107,8 @@ def main(argv=None):
             fail(f"The workflow finished but {gpkg} is not there.")
     elif not Path(config.OUTPUT_GPKG).exists():
         warn(f"--view-only, but there is no GeoPackage at {config.OUTPUT_GPKG}. "
-             "The pipes and leaks will still draw; the relocated points and "
-             "trace lines will be empty until the workflow has run.")
+             "The map will draw, with every layer empty, until the workflow has "
+             "run: python run.py --no-view")
 
     if args.no_view:
         log("Done. See the map later with: python run.py --view-only")
