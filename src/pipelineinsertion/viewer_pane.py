@@ -1,19 +1,19 @@
-"""A dockable attribute table for the Leaflet viewers.
+"""A dockable attribute table for the Leaflet map.
 
-Three separate generators build viewers in this repository, so the pane lives
-here as one CSS block and one JS block that each of them injects. Duplicating
-it per viewer is how the rest of this codebase drifted.
+Kept here as one CSS block and one JS block that the map server injects, rather
+than written inline in the page: a candidate list is read as a table at least as
+often as it is read as a map, and the two have to agree about what is on screen.
 
-Usage from a generator:
+Usage from the map server:
 
-    from leakrelocation.viewer_pane import PANE_CSS, PANE_JS, PANE_HTML
+    from pipelineinsertion.viewer_pane import PANE_CSS, PANE_JS, PANE_HTML
 
     html = "...<style>" + PANE_CSS + "</style>..." + PANE_HTML + \
            "<script>" + PANE_JS + "</script>"
 
 Then, once the Leaflet layers hold data, register each one:
 
-    AttributePane.register('leaks', 'Relocated leaks', leakLayer);
+    AttributePane.register('candidates', 'Insertion candidates', candidateLayer);
     AttributePane.build();
 
 `register` takes a key, a display label and an L.geoJSON layer. `build()` reads

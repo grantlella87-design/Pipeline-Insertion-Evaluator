@@ -3,7 +3,7 @@
 # access all fail in environment-specific ways, and none of them should stop a
 # sign-in that can still fall back to another route. Moved verbatim from the
 # workflow module.
-"""ArcGIS Portal authentication for the leak relocation workflow.
+"""ArcGIS Portal authentication for the pipeline insertion workflow.
 
 Extracted from the workflow module so signing in can be exercised, debugged and
 fixed on its own. `scripts/arcgis_signin.py` drives it from the command line.
@@ -49,9 +49,9 @@ _PACKAGE_PARENT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 if _PACKAGE_PARENT not in _sys.path:
     _sys.path.insert(0, _PACKAGE_PARENT)
 
-from leakrelocation import config
-from leakrelocation.matching import clean
-from leakrelocation.output import detail, fail, log, warn
+from pipelineinsertion import config
+from pipelineinsertion.fields import clean
+from pipelineinsertion.output import detail, fail, log, warn
 
 
 def make_session():
@@ -72,7 +72,7 @@ def make_session():
     os.environ["no_proxy"] = os.environ["NO_PROXY"]
     session = requests.Session()
     session.trust_env = True
-    session.headers.update({"User-Agent": "HistoricLeakRelocationGeoPandas/1.0"})
+    session.headers.update({"User-Agent": "PipelineInsertionEvaluator/1.0"})
     return session
 
 
@@ -372,8 +372,8 @@ def authorize_url_is_accepted(session, authorize_url, redirect_uri):
         "Add that exact value to the app registration's redirect URIs "
         f"(client id {config.ARCGIS_CLIENT_ID}). The string must match including the "
         "scheme, host spelling and trailing slash. Override with "
-        "LEAKRELOCATION_LOOPBACK_REDIRECT_URI, or set "
-        "LEAKRELOCATION_LOOPBACK_OAUTH=0 to skip the loopback flow."
+        "PIPEINSERT_LOOPBACK_REDIRECT_URI, or set "
+        "PIPEINSERT_LOOPBACK_OAUTH=0 to skip the loopback flow."
     )
     return False
 
@@ -566,12 +566,12 @@ def authenticated_count(session, layer_url):
 
 
 def main(argv=None):
-    """Run a sign-in session directly: python src/leakrelocation/auth.py
+    """Run a sign-in session directly: python src/pipelineinsertion/auth.py
 
     Reports the resolved configuration and the cached token, signs in when one
     is needed, then proves the token works with an authenticated count. Running
     this module is the quickest way to see why sign-in is failing without
-    starting the relocation workflow.
+    starting the evaluator.
 
     scripts/arcgis_signin.py wraps the same steps with --status, --check,
     --force, --clear and --test-query.

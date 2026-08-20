@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "leakrelocation"
+name = "pipelineinsertion"
 version = "0.1.0"
-description = "Historic leak relocation workflow for DNV / GeoPandas production processing"
+description = "LPP GSEP pipeline insertion candidate identification for MA Pressure View"
 requires-python = ">=3.9"
 dependencies = [
     "geopandas>=0.14",
@@ -24,7 +24,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["leakrelocation*"]
+include = ["pipelineinsertion*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

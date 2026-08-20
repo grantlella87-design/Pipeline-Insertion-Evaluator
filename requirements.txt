@@ -1,4 +1,4 @@
-# Runtime dependencies for the leak relocation workflow.
+# Runtime dependencies for the pipeline insertion evaluator.
 # Install into the project venv:
 #   .venv\Scripts\python.exe -m pip install -r requirements.txt
 geopandas>=0.14
@@ -8,6 +8,6 @@ pyproj>=3.5
 requests>=2.31
 keyring>=24.0
 
-# Tests (pure logic only - no network, no shared drive):
+# Tests (pure logic only - no network, no ArcGIS token):
 #   .venv\Scripts\python.exe -m pytest
 pytest>=7.4
