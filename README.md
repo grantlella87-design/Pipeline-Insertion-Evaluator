@@ -409,6 +409,7 @@ everything.
 ```text
 python bootstrap.py            create .venv and install into it
 python bootstrap.py --check    report what is missing, change nothing
+python bootstrap.py --network  report what it thinks of the network
 python bootstrap.py --force    reinstall even if nothing is missing
 ```
 
@@ -422,6 +423,70 @@ injects the OS certificate store into TLS. `auth.py` imports it inside a
 try/except and runs without it, but on a corporate network whose proxy presents
 an internal CA, it is the difference between every request working and every
 request failing certificate verification.
+
+### On the office network (Zscaler)
+
+Zscaler intercepts outbound TLS, so pip cannot reach PyPI directly - the
+connection is reset before it starts:
+
+```text
+WARNING: Retrying ... after connection broken by
+'ProtocolError('Connection aborted.', ConnectionResetError(10054,
+ 'An existing connection was forcibly closed by the remote host'))': /simple/pip/
+```
+
+The bootstrap handles this without being told to. Before installing it checks
+whether `http://zscaler.nationalgrid.com:80` answers, and if it does, pip is
+given `--proxy` for that address.
+
+There is a second half that is easy to miss. Once pip is going through the
+proxy, the certificate PyPI appears to present is signed by Zscaler's own CA,
+which certifi has never heard of - so fixing only the route turns a connection
+reset into an SSL error. The bootstrap therefore also exports the Windows trust
+store, where IT installed the Zscaler root, to
+`.venv\corporate-ca-bundle.pem` and passes it as `--cert`. Both settings are
+written into `.venv\pip.ini`, so your own `pip install` in that environment
+keeps working the same way.
+
+Check what it makes of the network without installing anything:
+
+```text
+python bootstrap.py --network
+```
+
+```text
+Network check:
+  proxy http://zscaler.nationalgrid.com:80: reachable
+  Zscaler root certificate installed: yes (1 found)
+  Zscaler client running: ZSATray.exe, ZSATunnel.exe
+
+pip would use: http://zscaler.nationalgrid.com:80
+and verify against the Windows trust store, so Zscaler's re-signed
+certificates are accepted.
+```
+
+The proxy is probed rather than assumed, so the same checkout works off the
+corporate network: if nothing answers, pip goes out directly. Reachability is
+the right test rather than "is the user in the office" - the Zscaler client
+tunnels from home too, and someone in the building on a guest network is not
+behind it.
+
+To override any of it:
+
+| Variable | Effect |
+|----------|--------|
+| `PIPEINSERT_PIP_PROXY=http://host:port` | Use this proxy, skip detection |
+| `PIPEINSERT_PIP_PROXY=` (empty) | Force a direct connection |
+| `PIPEINSERT_ZSCALER_PROXY=http://...` | Probe a different address |
+| `PIPEINSERT_PIP_CERT=C:\path\ca.pem` | Verify against this bundle instead |
+
+An `HTTPS_PROXY` or `HTTP_PROXY` already in the environment is left alone - pip
+reads those itself, and overriding them would ignore a deliberate choice.
+
+None of this touches the workflow's own requests. `gis.nationalgrid.com` is
+internal, and `auth.make_session` deliberately clears the proxy variables and
+sets `NO_PROXY` for it, so ArcGIS is reached directly. Only pip, talking to
+PyPI on the public internet, needs to go through Zscaler.
 
 Not to be confused with `scripts/_bootstrap.py`, which is a different and much
 smaller thing: the `sys.path` shim that lets the diagnostic scripts import the
@@ -462,13 +527,14 @@ in `config.py`, and each can be overridden with an environment variable.
 python -m pytest
 ```
 
-325 tests, none of which need a network, an ArcGIS token or a GIS install. They
+369 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
 including the GeoPackage write and reading it back through the map. The
 bootstrap is covered too, without creating a venv or running pip: which
-interpreter is running, what is missing, and that a re-exec cannot loop.
+interpreter is running, what is missing, that a re-exec cannot loop, and that
+the Zscaler proxy is used when it answers and not when it does not.
 
 `gsep.where_clause()` and `pressure.lower_pressure_where()` generate the SQL in
 the specification above from the same `config` values the local rules use, and
