@@ -371,26 +371,68 @@ here is the specification; everything below describes the code that runs it.
 ## Running it
 
 ```text
-pip install -r requirements.txt
+python run.py
+```
+
+That is the whole setup. On a Python that cannot import what the workflow
+needs, `run.py` creates `.venv` in the repository root, installs
+`requirements.txt` into it, and re-runs itself with that interpreter - then
+carries on. A first run prints a setup banner and takes a few minutes to
+download the geospatial stack; later runs skip straight through in about a
+tenth of a second.
+
+```text
+python run.py                    everything, then serve the map
+python run.py --no-view          stop after the GeoPackage
+python run.py --view-only        just serve the map
+python run.py --refresh          ignore the layer cache
+python run.py --port 8800        serve on another port
+python run.py --no-bootstrap     use this Python as-is, install nothing
 
 python scripts/arcgis_signin.py --test-query   # prove the token works
-python run.py                                  # evaluate, then serve the map
-python run.py --no-view                        # stop after the GeoPackage
-python run.py --view-only                      # just serve the map
-python run.py --refresh                        # ignore the layer cache
 ```
 
 `run.py` verifies the ArcGIS token before anything long starts, downloads Main
 Lines, runs the evaluation, writes the GeoPackage and opens a Leaflet map of
-the result.
+the result. The dependency check happens before the sign-in, so a missing
+package cannot cost you an interactive authentication first.
 
 A first run needs an ArcGIS Portal sign-in. The token is cached in the OS
 credential store, so later runs need no browser.
 
+### The environment
+
+`bootstrap.py` can also be run on its own, and imports nothing outside the
+standard library - it has to work on the interpreter that is missing
+everything.
+
+```text
+python bootstrap.py            create .venv and install into it
+python bootstrap.py --check    report what is missing, change nothing
+python bootstrap.py --force    reinstall even if nothing is missing
+```
+
+To manage the environment yourself - conda, a company-managed Python, a
+container that already has everything - either pass `--no-bootstrap` or set
+`PIPEINSERT_NO_BOOTSTRAP=1`, and `run.py` will use whatever interpreter it was
+started with.
+
+`truststore` is in `requirements.txt` for a reason worth knowing about: it
+injects the OS certificate store into TLS. `auth.py` imports it inside a
+try/except and runs without it, but on a corporate network whose proxy presents
+an internal CA, it is the difference between every request working and every
+request failing certificate verification.
+
+Not to be confused with `scripts/_bootstrap.py`, which is a different and much
+smaller thing: the `sys.path` shim that lets the diagnostic scripts import the
+package. It runs the venv bootstrap too, so those scripts self-install the same
+way.
+
 ## Repository layout
 
 ```text
-run.py                                  one command: sign in, evaluate, map
+run.py                                  one command: set up, sign in, evaluate, map
+bootstrap.py                            creates .venv and installs, on a bare Python
 src/pipeline_insertion_evaluator.py     the workflow, stage by stage
 src/leaflet_bbox_server.py              the map, served by bounding box
 src/pipelineinsertion/
@@ -420,11 +462,13 @@ in `config.py`, and each can be overridden with an environment variable.
 python -m pytest
 ```
 
-299 tests, none of which need a network, an ArcGIS token or a GIS install. They
+325 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
-including the GeoPackage write and reading it back through the map.
+including the GeoPackage write and reading it back through the map. The
+bootstrap is covered too, without creating a venv or running pip: which
+interpreter is running, what is missing, and that a re-exec cannot loop.
 
 `gsep.where_clause()` and `pressure.lower_pressure_where()` generate the SQL in
 the specification above from the same `config` values the local rules use, and

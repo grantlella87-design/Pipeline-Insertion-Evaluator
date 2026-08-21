@@ -1,10 +1,16 @@
-"""One command: sign in, download, evaluate, write, and open the map.
+"""One command: set up, sign in, download, evaluate, write, and open the map.
 
     python run.py                    everything, then serve the map
     python run.py --no-view          stop after the GeoPackage
     python run.py --view-only        just serve the map
     python run.py --refresh          ignore the layer cache
     python run.py --port 8800        serve on another port
+    python run.py --no-bootstrap     use this Python as-is, install nothing
+
+On a Python that cannot import what the workflow needs, the first thing this
+does is create `.venv`, install `requirements.txt` into it, and re-run itself
+with that interpreter. So `python run.py` on a fresh checkout works, with no
+setup step to know about first. See bootstrap.py.
 
 The evaluator is src/pipeline_insertion_evaluator.py and the map is
 src/leaflet_bbox_server.py, which draws the Lower Pressure systems, the Other
@@ -21,6 +27,23 @@ for folder in ("src", "scripts"):
     path = str(REPO_ROOT / folder)
     if path not in sys.path:
         sys.path.insert(0, path)
+
+# Before any import that needs a third-party package, and before the ArcGIS
+# sign-in. This used to fail after the interactive sign-in had already been
+# done, so the user authenticated and then watched it die on a missing import.
+#
+# bootstrap is stdlib-only by design - it has to run on the interpreter that is
+# missing everything.
+import bootstrap
+
+if "--no-bootstrap" in sys.argv:
+    sys.argv = [arg for arg in sys.argv if arg != "--no-bootstrap"]
+    os.environ[bootstrap.OPT_OUT_ENV] = "1"
+
+_BOOTSTRAP_EXIT = bootstrap.ensure(sys.argv)
+if _BOOTSTRAP_EXIT is not None:
+    # The work happened in a subprocess running the project venv's Python.
+    sys.exit(_BOOTSTRAP_EXIT)
 
 from pipelineinsertion import config
 from pipelineinsertion.output import fail, log, step, warn
@@ -41,6 +64,12 @@ def parse_args(argv=None):
                         help="Serve the map without opening a browser.")
     parser.add_argument("--skip-signin-check", action="store_true",
                         help="Do not verify the token before the long stages.")
+    # Handled at import, before any dependency is needed, and removed from argv
+    # there - so this never reaches parse_args. Declared anyway so it appears in
+    # --help, which is the only place a user would look for it.
+    parser.add_argument("--no-bootstrap", action="store_true",
+                        help="Use this Python as-is: do not create .venv or "
+                             "install anything.")
     return parser.parse_args(argv)
 
 
