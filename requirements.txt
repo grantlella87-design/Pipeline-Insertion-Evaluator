@@ -8,6 +8,12 @@ pyproj>=3.5
 requests>=2.31
 keyring>=24.0
 
+# Injects the OS certificate store into TLS. auth.make_session imports it
+# defensively and runs without it, but on a corporate network whose proxy
+# presents an internal CA, it is the difference between every request
+# working and every request failing certificate verification.
+truststore>=0.9
+
 # Tests (pure logic only - no network, no ArcGIS token):
 #   .venv\Scripts\python.exe -m pytest
 pytest>=7.4

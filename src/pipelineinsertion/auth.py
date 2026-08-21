@@ -1,4 +1,4 @@
-﻿# ruff: noqa: BLE001, S110, S112
+# ruff: noqa: BLE001, S110, S112
 # Broad excepts are deliberate here: keyring, browser-history and clipboard
 # access all fail in environment-specific ways, and none of them should stop a
 # sign-in that can still fall back to another route. Moved verbatim from the
