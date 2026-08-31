@@ -210,20 +210,59 @@ def request_json_post(session, url, params):
 # --- Metadata ----------------------------------------------------------------
 
 
+def spatial_reference_of(layer_json):
+    """(crs, wkid, raw) for a layer, reading the WKT before the wkid.
+
+    The WKT comes first because the National Grid services are published in a
+    custom projection - NG_Equidistant_Conic_USft - which has no EPSG code at
+    all. Its spatialReference arrives as a bare {"wkt": ...}, so code that only
+    looks for `wkid`/`latestWkid` gets None and hands the geometries on with no
+    coordinate system.
+
+    Nothing raises when that happens, which is what makes it worth this much
+    care: the frame is simply labelled with the fallback zone later, the
+    coordinates are then feet in one projection being read as feet in another,
+    and the numbers stay plausible while every position is wrong.
+
+    `crs` is whatever pyproj can consume - an "EPSG:xxxx" string or the WKT
+    itself. None means the layer told us nothing.
+    """
+    raw = ((layer_json.get("extent") or {}).get("spatialReference")
+           or layer_json.get("spatialReference") or {})
+    wkid = raw.get("latestWkid") or raw.get("wkid")
+    wkt = raw.get("wkt") or raw.get("wkt2")
+
+    # A custom projection is identified only by its WKT, and where both are
+    # present the WKT is the more specific of the two.
+    if wkt:
+        return wkt, wkid, raw
+    if wkid:
+        return f"EPSG:{int(wkid)}", int(wkid), raw
+    return None, None, raw
+
+
 def layer_metadata(session, layer_url):
     data = request_json(session, layer_url, {"f": "json"})
     fields = data.get("fields", [])
     object_id_field = data.get("objectIdField") or next(
         (f.get("name") for f in fields if f.get("type") == "esriFieldTypeOID"), None)
-    spatial_reference = (data.get("extent", {}).get("spatialReference")
-                         or data.get("spatialReference") or {})
-    wkid = spatial_reference.get("latestWkid") or spatial_reference.get("wkid")
+    layer_crs, wkid, spatial_reference = spatial_reference_of(data)
+    if layer_crs is None:
+        warn(f"{layer_url} reported no usable spatial reference "
+             f"({spatial_reference}). Every coordinate from it is unlabelled, "
+             f"so the distance analysis cannot be trusted.")
+    else:
+        detail(f"Layer spatial reference: wkid={wkid} "
+               f"{'(custom WKT)' if not wkid else ''}")
+
     max_record_count = int(data.get("maxRecordCount") or config.REQUEST_PAGE_SIZE)
     page_size = (min(config.REQUEST_PAGE_SIZE, max_record_count)
                  if max_record_count > 0 else config.REQUEST_PAGE_SIZE)
     return {
         "object_id_field": object_id_field,
         "wkid": wkid,
+        "crs": layer_crs,
+        "spatial_reference": spatial_reference,
         "fields": fields,
         "page_size": page_size,
         "layer_json": data,
@@ -369,6 +408,17 @@ def read_layer_cache(layer_name, layer_url, where_clause):
                 f"populated for every record.")
             return None, None
         gdf = pd.read_pickle(data_path, compression="gzip")
+        if len(gdf) and gdf.crs is None:
+            # A cache written before the spatial reference was read from the
+            # layer's WKT carries no CRS, and nothing downstream can recover
+            # one - the coordinates get labelled with the fallback zone and
+            # every position comes out wrong while the numbers stay plausible.
+            # Refreshing is the only fix, and it has to happen without the user
+            # having to know any of that.
+            log(f"{layer_name}: this cache has no coordinate system, so it was "
+                f"written before the layer's projection was read correctly. "
+                f"Refreshing it in full.")
+            return None, None
         log(f"{layer_name}: loaded {len(gdf):,} records from cache: {data_path}")
         return gdf, meta
     except Exception as ex:  # noqa: BLE001 - see below
@@ -538,7 +588,10 @@ def _fetch_objectid_batch(layer_url, object_id_batch, layer_name, meta, out_fiel
         "returnGeometry": "true",
         "token": token,
     }
-    if meta["wkid"]:
+    # Omitted when the layer has no wkid: the service then answers in its own
+    # native reference, which is exactly what source_crs above describes. Asking
+    # for a projection the layer does not have would silently reproject.
+    if meta.get("wkid"):
         params["outSR"] = meta["wkid"]
     data = request_json_post(local_session, layer_url + "/query", params)
     batch = data.get("features", [])
@@ -548,7 +601,10 @@ def _fetch_objectid_batch(layer_url, object_id_batch, layer_name, meta, out_fiel
 
 
 def query_feature_set(session, layer_url, where_clause, layer_name, meta, out_fields):
-    source_crs = f"EPSG:{meta['wkid']}" if meta["wkid"] else None
+    # Whatever the layer is actually published in, WKT included - not only a
+    # spatial reference that happens to have an EPSG code. See
+    # `spatial_reference_of`.
+    source_crs = meta.get("crs")
 
     if config.USE_OBJECTID_BATCH_DOWNLOAD:
         object_ids = query_object_ids(session, layer_url, where_clause, layer_name)
@@ -618,7 +674,7 @@ def _query_by_paging(session, layer_url, where_clause, layer_name, meta, out_fie
             "resultRecordCount": page_size,
             "orderByFields": meta["object_id_field"],
         }
-        if meta["wkid"]:
+        if meta.get("wkid"):
             params["outSR"] = meta["wkid"]
         data = request_json(session, layer_url + "/query", params)
         batch = data.get("features", [])

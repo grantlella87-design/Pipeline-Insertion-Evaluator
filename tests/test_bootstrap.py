@@ -279,3 +279,304 @@ class TestRequirementsFile:
             encoding="utf-8-sig").lower()
         for name in bootstrap.REQUIRED_IMPORTS + bootstrap.OPTIONAL_IMPORTS:
             assert name in pyproject, f"{name} is not in pyproject.toml"
+
+
+class TestProxyUrlParsing:
+    @pytest.mark.parametrize("url,expected", [
+        ("http://zscaler.nationalgrid.com:80", ("zscaler.nationalgrid.com", 80)),
+        ("zscaler.nationalgrid.com", ("zscaler.nationalgrid.com", 80)),
+        ("http://proxy:3128", ("proxy", 3128)),
+        ("http://user:pw@proxy:3128", ("proxy", 3128)),
+        ("http://proxy", ("proxy", 80)),
+    ])
+    def test_split_host_port(self, url, expected):
+        assert bootstrap.split_host_port(url) == expected
+
+    def test_a_nonsense_port_falls_back_rather_than_raising(self):
+        host, port = bootstrap.split_host_port("http://proxy:notaport")
+        assert port == 80
+
+    @pytest.mark.parametrize("url,expected", [
+        ("zscaler.nationalgrid.com:80", "http://zscaler.nationalgrid.com:80"),
+        ("http://proxy:3128", "http://proxy:3128"),
+        ("https://proxy:3128", "https://proxy:3128"),
+        ("  proxy  ", "http://proxy"),
+        ("", ""),
+    ])
+    def test_normalise_proxy_adds_a_scheme(self, url, expected):
+        assert bootstrap.normalise_proxy(url) == expected
+
+    def test_the_default_is_the_nationalgrid_zscaler(self):
+        assert bootstrap.DEFAULT_ZSCALER_PROXY == "http://zscaler.nationalgrid.com:80"
+
+
+class TestTcpReachable:
+    def test_a_listening_socket_is_reachable(self):
+        import socket
+
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        try:
+            assert bootstrap.tcp_reachable(*server.getsockname(), timeout=3) is True
+        finally:
+            server.close()
+
+    def test_a_closed_port_is_not(self):
+        # Port 9 (discard) is reserved and not listening on a normal machine.
+        assert bootstrap.tcp_reachable("127.0.0.1", 9, timeout=1) is False
+
+    def test_an_unresolvable_host_is_not(self):
+        assert bootstrap.tcp_reachable(
+            "no-such-host.invalid", 80, timeout=3) is False
+
+    def test_a_nonsense_port_does_not_raise(self):
+        assert bootstrap.tcp_reachable("127.0.0.1", "abc", timeout=1) is False
+
+
+@pytest.fixture
+def no_proxy_env(monkeypatch):
+    """Clear every proxy variable, so detection rather than the host is tested."""
+    for name in bootstrap.STANDARD_PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(bootstrap.PROXY_ENV, raising=False)
+    monkeypatch.delenv(bootstrap.ZSCALER_PROXY_ENV, raising=False)
+    monkeypatch.delenv(bootstrap.CA_BUNDLE_ENV, raising=False)
+
+
+@pytest.fixture
+def listening_proxy():
+    """A socket standing in for the Zscaler proxy."""
+    import socket
+    import threading
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+
+    def accept_forever():
+        while True:
+            try:
+                server.accept()
+            except OSError:
+                return
+
+    threading.Thread(target=accept_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.getsockname()[1]}"
+    server.close()
+
+
+class TestDetectZscaler:
+    def test_a_reachable_proxy_counts_as_active(self, no_proxy_env, monkeypatch,
+                                                listening_proxy):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        report = bootstrap.detect_zscaler()
+        assert report["proxy_reachable"] is True
+        assert report["active"] is True
+
+    def test_an_unreachable_proxy_with_no_other_evidence_is_not_active(
+            self, no_proxy_env, monkeypatch):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, "http://127.0.0.1:9")
+        monkeypatch.setattr(bootstrap, "zscaler_certificate_names", lambda: [])
+        monkeypatch.setattr(bootstrap, "zscaler_processes", lambda: [])
+        monkeypatch.setattr(bootstrap, "system_proxy_setting", lambda: "")
+        report = bootstrap.detect_zscaler()
+        assert report["proxy_reachable"] is False
+        assert report["active"] is False
+
+    def test_an_installed_certificate_alone_counts_as_active(
+            self, no_proxy_env, monkeypatch):
+        """Zscaler tunnelling from home, where the office proxy is unreachable.
+
+        Worth distinguishing from "no Zscaler at all", because the advice
+        differs: one needs a proxy address, the other needs nothing.
+        """
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, "http://127.0.0.1:9")
+        monkeypatch.setattr(bootstrap, "zscaler_certificate_names",
+                            lambda: ["Zscaler root certificate"])
+        monkeypatch.setattr(bootstrap, "zscaler_processes", lambda: [])
+        monkeypatch.setattr(bootstrap, "system_proxy_setting", lambda: "")
+        report = bootstrap.detect_zscaler()
+        assert report["active"] is True
+        assert report["proxy_reachable"] is False
+
+    def test_the_report_carries_the_url_it_probed(self, no_proxy_env):
+        report = bootstrap.detect_zscaler("http://example.invalid:8080")
+        assert report["proxy_url"] == "http://example.invalid:8080"
+        assert report["proxy_host"] == "example.invalid"
+        assert report["proxy_port"] == 8080
+
+    def test_detection_is_cheap_off_network(self, no_proxy_env, monkeypatch):
+        # Someone at home must not wait on this. The probe timeout bounds it.
+        assert bootstrap.PROXY_PROBE_TIMEOUT_SECONDS <= 5
+
+
+class TestResolvePipProxy:
+    def test_a_reachable_zscaler_is_used(self, no_proxy_env, monkeypatch,
+                                         listening_proxy):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        report = bootstrap.detect_zscaler()
+        assert bootstrap.resolve_pip_proxy(report, log=lambda *a: None) == listening_proxy
+
+    def test_an_unreachable_zscaler_is_not(self, no_proxy_env, monkeypatch):
+        """Off the corporate network, forcing the proxy breaks a working run."""
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, "http://127.0.0.1:9")
+        report = bootstrap.detect_zscaler()
+        assert bootstrap.resolve_pip_proxy(report, log=lambda *a: None) == ""
+
+    def test_explicit_override_wins_over_detection(self, no_proxy_env, monkeypatch,
+                                                   listening_proxy):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        monkeypatch.setenv(bootstrap.PROXY_ENV, "http://chosen:3128")
+        report = bootstrap.detect_zscaler()
+        assert bootstrap.resolve_pip_proxy(
+            report, log=lambda *a: None) == "http://chosen:3128"
+
+    def test_an_empty_override_forces_a_direct_connection(
+            self, no_proxy_env, monkeypatch, listening_proxy):
+        # The escape hatch for a machine where detection gets it wrong.
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        monkeypatch.setenv(bootstrap.PROXY_ENV, "")
+        report = bootstrap.detect_zscaler()
+        assert bootstrap.resolve_pip_proxy(report, log=lambda *a: None) == ""
+
+    def test_an_override_without_a_scheme_is_normalised(self, no_proxy_env,
+                                                        monkeypatch):
+        monkeypatch.setenv(bootstrap.PROXY_ENV, "zscaler.nationalgrid.com:80")
+        assert bootstrap.resolve_pip_proxy(None, log=lambda *a: None) == (
+            "http://zscaler.nationalgrid.com:80")
+
+    @pytest.mark.parametrize("name", ["HTTPS_PROXY", "http_proxy", "ALL_PROXY"])
+    def test_an_existing_proxy_variable_is_left_alone(self, no_proxy_env,
+                                                      monkeypatch, name,
+                                                      listening_proxy):
+        """pip reads these itself; overriding would ignore a deliberate choice."""
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        monkeypatch.setenv(name, "http://already:8080")
+        report = bootstrap.detect_zscaler()
+        assert bootstrap.resolve_pip_proxy(report, log=lambda *a: None) == ""
+
+
+class TestPipNetworkArgs:
+    def test_no_proxy_means_no_arguments(self, no_proxy_env, monkeypatch, tmp_path):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, "http://127.0.0.1:9")
+        assert bootstrap.pip_network_args(tmp_path, log=lambda *a: None) == []
+
+    def test_a_detected_proxy_becomes_a_pip_argument(self, no_proxy_env, monkeypatch,
+                                                     tmp_path, listening_proxy):
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        args = bootstrap.pip_network_args(tmp_path, log=lambda *a: None)
+        assert args[:2] == ["--proxy", listening_proxy]
+
+    def test_a_certificate_bundle_is_added_when_one_can_be_built(
+            self, no_proxy_env, monkeypatch, tmp_path, listening_proxy):
+        """The half that is easy to forget.
+
+        A working proxy turns the connection reset into an SSL error, because
+        Zscaler re-signs with a CA certifi does not carry.
+        """
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        monkeypatch.setattr(bootstrap, "write_ca_bundle",
+                            lambda *a, **k: tmp_path / "ca.pem")
+        args = bootstrap.pip_network_args(tmp_path, log=lambda *a: None)
+        assert "--cert" in args
+        assert str(tmp_path / "ca.pem") in args
+
+    def test_arguments_come_in_flag_value_pairs(self, no_proxy_env, monkeypatch,
+                                                tmp_path, listening_proxy):
+        # write_pip_config pairs them off, so an odd-length list would silently
+        # write a wrong config file.
+        monkeypatch.setenv(bootstrap.ZSCALER_PROXY_ENV, listening_proxy)
+        monkeypatch.setattr(bootstrap, "write_ca_bundle",
+                            lambda *a, **k: tmp_path / "ca.pem")
+        args = bootstrap.pip_network_args(tmp_path, log=lambda *a: None)
+        assert len(args) % 2 == 0
+        assert all(flag.startswith("--") for flag in args[::2])
+
+
+class TestCaBundle:
+    def test_an_override_is_honoured(self, no_proxy_env, monkeypatch, tmp_path):
+        monkeypatch.setenv(bootstrap.CA_BUNDLE_ENV, str(tmp_path / "mine.pem"))
+        assert bootstrap.write_ca_bundle(tmp_path, log=lambda *a: None) == (
+            tmp_path / "mine.pem")
+
+    def test_nothing_is_written_where_there_is_no_windows_store(
+            self, no_proxy_env, monkeypatch, tmp_path):
+        monkeypatch.setattr(bootstrap, "windows_root_certificates", lambda: [])
+        assert bootstrap.write_ca_bundle(tmp_path, log=lambda *a: None) is None
+
+    def test_certificates_are_written_as_pem(self, no_proxy_env, monkeypatch,
+                                             tmp_path):
+        # DER_cert_to_PEM_cert base64-encodes and wraps; it does not parse, so
+        # the content of the blob is irrelevant to what is being checked here -
+        # that every certificate found reaches the file in the form pip's
+        # --cert expects.
+        monkeypatch.setattr(bootstrap, "windows_root_certificates",
+                            lambda: [b"first-cert-bytes", b"second-cert-bytes"])
+        written = bootstrap.write_ca_bundle(tmp_path, log=lambda *a: None)
+
+        assert written is not None
+        text = written.read_text()
+        assert text.count("-----BEGIN CERTIFICATE-----") == 2
+        assert text.count("-----END CERTIFICATE-----") == 2
+
+    def test_the_bundle_lands_inside_the_venv(self, no_proxy_env, monkeypatch,
+                                              tmp_path):
+        # Which is gitignored, so a machine-specific trust bundle is never
+        # committed.
+        monkeypatch.setattr(bootstrap, "windows_root_certificates",
+                            lambda: [b"cert"])
+        written = bootstrap.write_ca_bundle(tmp_path, log=lambda *a: None)
+        assert written.parent == tmp_path
+
+    def test_an_unconvertible_certificate_does_not_cost_the_bundle(
+            self, no_proxy_env, monkeypatch, tmp_path):
+        # Captured before patching: bootstrap.ssl is the ssl module itself, so
+        # calling through the module inside the replacement would recurse into
+        # the replacement.
+        original = bootstrap.ssl.DER_cert_to_PEM_cert
+
+        def convert(cert_bytes):
+            if cert_bytes == b"bad":
+                raise ValueError("not a certificate")
+            return original(cert_bytes)
+
+        monkeypatch.setattr(bootstrap, "windows_root_certificates",
+                            lambda: [b"good", b"bad", b"alsogood"])
+        monkeypatch.setattr(bootstrap.ssl, "DER_cert_to_PEM_cert", convert)
+        written = bootstrap.write_ca_bundle(tmp_path, log=lambda *a: None)
+        assert written.read_text().count("-----BEGIN CERTIFICATE-----") == 2
+
+
+class TestWritePipConfig:
+    def test_settings_are_persisted_for_later_manual_pip_use(self, tmp_path):
+        written = bootstrap.write_pip_config(
+            tmp_path, ["--proxy", "http://p:80", "--cert", "C:\\ca.pem"],
+            log=lambda *a: None)
+        text = written.read_text()
+        assert "[global]" in text
+        assert "proxy = http://p:80" in text
+        assert "cert = C:\\ca.pem" in text
+
+    def test_the_filename_matches_what_pip_looks_for(self, tmp_path):
+        written = bootstrap.write_pip_config(
+            tmp_path, ["--proxy", "http://p:80"], log=lambda *a: None)
+        assert written.name == ("pip.ini" if os.name == "nt" else "pip.conf")
+
+    def test_nothing_is_written_when_there_is_nothing_to_say(self, tmp_path):
+        assert bootstrap.write_pip_config(tmp_path, [], log=lambda *a: None) is None
+
+
+class TestPipFailureHint:
+    def test_names_the_proxy_when_none_was_used_but_zscaler_is_active(self):
+        report = {"active": True, "proxy_url": "http://z:80"}
+        assert bootstrap.PROXY_ENV in bootstrap.pip_failure_hint(report, [])
+
+    def test_names_the_certificate_when_a_proxy_was_used_without_one(self):
+        report = {"active": True, "proxy_url": "http://z:80"}
+        hint = bootstrap.pip_failure_hint(report, ["--proxy", "http://z:80"])
+        assert bootstrap.CA_BUNDLE_ENV in hint
+
+    def test_suggests_the_default_proxy_off_network(self):
+        report = {"active": False, "proxy_url": "http://z:80"}
+        assert bootstrap.DEFAULT_ZSCALER_PROXY in bootstrap.pip_failure_hint(report, [])
