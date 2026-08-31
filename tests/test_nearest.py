@@ -278,3 +278,90 @@ class TestEndToEnd:
         assert candidates.iloc[0][schema.SOURCE_IDS] == "{A}|a;{B}|b"
         assert candidates.iloc[0][schema.DISTANCE_FT] == pytest.approx(30.0)
         assert len(paths) == 1
+
+
+class TestMissingCoordinates:
+    """A system with no target must not become a NaN geometry.
+
+    This is the bug that emptied a real map. `None` written into a float column
+    becomes NaN, NaN is not None, and two distinct NaN objects do not compare
+    equal - so both of the original guards passed and a
+    `LINESTRING (NaN NaN, NaN NaN)` was written to the GeoPackage. Nothing
+    raised at any point; the map died later, on `fitBounds`.
+    """
+
+    def test_none_and_nan_both_count_as_missing(self):
+        assert nearest.is_missing(None) is True
+        assert nearest.is_missing(float("nan")) is True
+        assert nearest.is_missing(0.0) is False
+        assert nearest.is_missing(-1.5) is False
+        assert nearest.is_missing("") is False
+
+    def test_nan_corners_make_no_path(self):
+        nan = float("nan")
+        assert nearest.connection_path(nan, nan, nan, nan) is None
+        assert nearest.connection_path(1.0, 2.0, nan, nan) is None
+        assert nearest.connection_path(nan, 2.0, 3.0, 4.0) is None
+
+    def test_numpy_nan_corners_make_no_path(self):
+        # What actually comes out of a pandas float column.
+        import numpy as np
+
+        nan = np.float64("nan")
+        assert nearest.connection_path(nan, nan, nan, nan) is None
+
+    def test_a_real_path_is_still_built(self):
+        # The guard must not reject valid input.
+        line = nearest.connection_path(0.0, 0.0, 0.0, 30.0)
+        assert line is not None and line.length == pytest.approx(30.0)
+
+    def test_no_path_is_produced_for_a_system_with_no_target(self):
+        lower = make_systems([("LP1", LOWER, 30, WC, CANDIDATE)])
+        other = make_systems([])
+
+        near, paths, _ = nearest.analyse(lower, other)
+
+        assert len(near) == 1
+        assert len(paths) == 0
+        assert near.iloc[0][schema.CANDIDATE_STATUS] == (
+            nearest.STATUS_NO_TARGET_IN_RANGE)
+
+    def test_every_path_geometry_is_valid_and_finite(self):
+        """The property that has to hold for the map to survive.
+
+        One invalid geometry makes the layer's total_bounds NaN, which makes the
+        map's centre NaN, which throws inside Leaflet.
+        """
+        import math
+
+        # A mix: one qualifying system, one too far, one with nothing in range.
+        lower = make_systems([
+            ("LP1", LOWER, 30, WC, CANDIDATE),
+            ("LP2", LOWER, 30, WC, LineString([(0, 900), (100, 900)])),
+            ("LP3", LOWER, 30, WC, LineString([(0, 90000), (100, 90000)])),
+        ])
+        other = make_systems([("OP1", OTHER, 20, PSI, target_at(30))])
+
+        near, paths, candidates = nearest.analyse(lower, other)
+
+        for label, frame in (("near", near), ("paths", paths),
+                             ("candidates", candidates)):
+            if not len(frame):
+                continue
+            assert frame.geometry.is_valid.all(), f"{label} has invalid geometry"
+            assert not frame.geometry.is_empty.any(), f"{label} has empty geometry"
+            assert all(math.isfinite(v) for v in frame.total_bounds), (
+                f"{label}.total_bounds is not finite: {frame.total_bounds}")
+
+    def test_the_near_table_still_reports_every_system(self):
+        # Dropping the path must not drop the row that explains why.
+        lower = make_systems([
+            ("LP1", LOWER, 30, WC, CANDIDATE),
+            ("LP2", LOWER, 30, WC, LineString([(0, 90000), (100, 90000)])),
+        ])
+        other = make_systems([("OP1", OTHER, 20, PSI, target_at(30))])
+
+        near, paths, _ = nearest.analyse(lower, other)
+
+        assert len(near) == 2
+        assert len(paths) == 1

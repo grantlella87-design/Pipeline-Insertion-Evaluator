@@ -543,7 +543,7 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-379 tests, none of which need a network, an ArcGIS token or a GIS install. They
+390 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
@@ -645,6 +645,29 @@ which is the one the frame is labelled with.
 A layer cache written before this was fixed carries no CRS at all, and nothing
 downstream can recover one. Such a cache is detected on read and re-downloaded
 automatically.
+
+## A system with no target produces no path, not a NaN one
+
+A Lower Pressure system with nothing inside the search limit has no nearest
+point, so its coordinate columns are empty. They live in a float64 frame, which
+means pandas stores NaN rather than None - and NaN defeats the obvious guard:
+
+```python
+None in (nan, nan)        # False
+(nan, nan) == (nan, nan)  # False, for distinct NaN objects
+```
+
+Both checks passed, and `LINESTRING (NaN NaN, NaN NaN)` was written into the
+GeoPackage. Nothing raised. Reading it back warned "invalid value encountered
+in from_wkb", the layer's `total_bounds` came back NaN, the map's centre became
+NaN, and `fitBounds` was handed NaN - which throws inside Leaflet, kills the
+rest of the page's script, and leaves every layer unloaded. The symptom is a map
+with all of its structure and none of its data.
+
+`nearest.is_missing` now treats None and NaN alike, a row with no target is
+skipped before a path is built, the GeoPackage write drops any geometry that is
+still unusable and says how many, and the map ignores a layer whose extent is
+not finite rather than letting one bad row decide where it opens.
 
 ## Distances need a foot-based coordinate system
 

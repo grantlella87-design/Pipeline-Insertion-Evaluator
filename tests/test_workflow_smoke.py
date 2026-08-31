@@ -226,3 +226,127 @@ class TestMapServerReadsWhatTheWorkflowWrote:
         assert "candidates" in server.LAYER_NOTES
         assert server.BOUNDS == server.FALLBACK_BOUNDS
         assert "not available" in server.html_page()
+
+
+class TestNoNanGeometryReachesTheMap:
+    """End to end for the bug that emptied a real map.
+
+    A system with nothing in range wrote a NaN LineString into the GeoPackage.
+    Reading it back warned "invalid value encountered in from_wkb",
+    total_bounds became NaN, the map's centre became NaN, and fitBounds threw
+    inside Leaflet - so every layer stayed unloaded and the page showed its
+    structure with no data.
+    """
+
+    @pytest.fixture
+    def analysed_with_an_orphan(self):
+        import geopandas as gpd
+
+        from pipelineinsertion import pressure as pressure_module
+
+        # LP1 has a target 30 ft away; ORPHAN has nothing within the search
+        # limit at all, which is the row that used to produce NaN.
+        rows = [
+            ("{A}", config.ASSETTYPE_CAST_IRON, 8, 30, WC, at(0, 0, 100, 0)),
+            ("{ORPHAN}", config.ASSETTYPE_CAST_IRON, 8, 30, WC,
+             at(0, 5_000_000, 100, 5_000_000)),
+            ("{T}", config.ASSETTYPE_COATED_STEEL, 12, 20, PSI, at(0, 30, 100, 30)),
+        ]
+        frame = gpd.GeoDataFrame(
+            [{"GLOBALID": g, "legacyid": g.strip("{}").lower(), "ASSETTYPE": a,
+              "nominaldiameter": d, "installationdate": None,
+              "OPERATINGPRESSURE": p, "pressureunits": u, "MAOPRECORD": None}
+             for g, a, d, p, u, _ in rows],
+            geometry=[r[5] for r in rows], crs="EPSG:2249")
+
+        classified = classify.classify(frame, RESOLVED)
+        lower = systems.dissolve(classify.lower_pressure_candidates(classified),
+                                 "GLOBALID", "legacyid")
+        other = systems.dissolve(classify.other_pressure_targets(classified),
+                                 "GLOBALID", "legacyid")
+        near, paths, candidates = nearest.analyse(lower, other)
+        return near, paths, candidates
+
+    def test_the_orphan_is_reported_but_produces_no_path(self, analysed_with_an_orphan):
+        near, paths, _ = analysed_with_an_orphan
+        assert len(near) == 2
+        statuses = set(near[schema.CANDIDATE_STATUS])
+        assert nearest.STATUS_NO_TARGET_IN_RANGE in statuses
+        assert len(paths) == 1
+
+    def test_no_layer_has_a_nan_extent(self, analysed_with_an_orphan):
+        import math
+
+        for frame in analysed_with_an_orphan:
+            if len(frame):
+                assert all(math.isfinite(v) for v in frame.total_bounds)
+
+    def test_it_survives_a_geopackage_round_trip_and_frames_the_map(
+            self, analysed_with_an_orphan, tmp_path, monkeypatch):
+        import math
+        import warnings
+
+        near, paths, candidates = analysed_with_an_orphan
+        monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path)
+        monkeypatch.setattr(config, "OUTPUT_GPKG", tmp_path / "out.gpkg")
+
+        import pipeline_insertion_evaluator as workflow
+
+        workflow.write_outputs({
+            schema.INSERTION_PATHS_LAYER: paths,
+            schema.NEAR_AUDIT_TABLE: near,
+            schema.CANDIDATES_LAYER: candidates,
+        })
+
+        import importlib
+
+        import leaflet_bbox_server as server
+
+        importlib.reload(server)
+        server.DATA.clear()
+        server.LAYER_NOTES.clear()
+
+        # Reading a NaN geometry back warns; there must be no such warning.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            server.load_all()
+        wkb_warnings = [w for w in caught if "from_wkb" in str(w.message)]
+        assert not wkb_warnings, f"invalid geometry read back: {wkb_warnings}"
+
+        for key, value in server.BOUNDS.items():
+            assert math.isfinite(value), f"BOUNDS[{key}] is {value}"
+        assert server.BOUNDS != server.FALLBACK_BOUNDS, (
+            "the real extent was lost and the map fell back to the whole state")
+
+
+class TestBoundsSurviveABadLayer:
+    def test_a_nan_extent_layer_is_ignored_rather_than_poisoning_the_map(
+            self, monkeypatch):
+        """Defence in depth: one bad layer must not cost the whole map.
+
+        NaN wins every min() and max(), so without this a single unusable layer
+        made every bound NaN.
+        """
+        import math
+
+        import geopandas as gpd
+        from shapely.geometry import LineString
+
+        import leaflet_bbox_server as server
+
+        good = gpd.GeoDataFrame(
+            {"a": [1]}, geometry=[LineString([(-71.1, 42.3), (-71.0, 42.4)])],
+            crs="EPSG:4326")
+        bad = gpd.GeoDataFrame(
+            {"a": [1]},
+            geometry=[LineString([(float("nan"), float("nan")),
+                                  (float("nan"), float("nan"))])],
+            crs="EPSG:4326")
+
+        monkeypatch.setitem(server.DATA, "candidates", good)
+        monkeypatch.setitem(server.DATA, "paths_pass", bad)
+
+        bounds = server.compute_bounds()
+        assert all(math.isfinite(v) for v in bounds.values())
+        assert bounds["south"] == pytest.approx(42.3)
+        assert bounds["north"] == pytest.approx(42.4)

@@ -242,21 +242,49 @@ def _empty():
 
 
 def compute_bounds():
-    """The extent to open the map at: everything loaded, else Massachusetts."""
-    boxes = [gdf.total_bounds for gdf in DATA.values() if len(gdf)]
+    """The extent to open the map at: everything loaded, else Massachusetts.
+
+    Layers whose extent is not finite are left out. One invalid geometry makes
+    `total_bounds` return NaN for its whole layer, NaN then wins every min() and
+    max() here, and the page is handed `fitBounds([[NaN, NaN], [NaN, NaN]])` -
+    which throws inside Leaflet, kills the rest of the page's script and leaves
+    every layer unloaded. A single bad row must not cost the whole map.
+    """
+    import math
+
+    boxes = []
+    for key, gdf in DATA.items():
+        if not len(gdf):
+            continue
+        box = gdf.total_bounds
+        if all(math.isfinite(value) for value in box):
+            boxes.append(box)
+        else:
+            log(f"WARNING {LAYERS[key]['label']} has no finite extent, so it is "
+                f"ignored when framing the map. It holds geometry with NaN "
+                f"coordinates.")
+
     if not boxes:
-        log("No features in any layer, so the map opens on Massachusetts.")
+        log("No layer has a usable extent, so the map opens on Massachusetts.")
         return dict(FALLBACK_BOUNDS)
+
     west = min(box[0] for box in boxes)
     south = min(box[1] for box in boxes)
     east = max(box[2] for box in boxes)
     north = max(box[3] for box in boxes)
-    return {
+    bounds = {
         "west": float(west), "south": float(south),
         "east": float(east), "north": float(north),
         "center_lat": float((south + north) / 2.0),
         "center_lon": float((west + east) / 2.0),
     }
+    # Belt and braces: whatever happens above, the page is never handed a NaN,
+    # because there is no recovering from it on the browser side.
+    if not all(math.isfinite(value) for value in bounds.values()):
+        log("WARNING the combined extent is not finite, so the map opens on "
+            "Massachusetts.")
+        return dict(FALLBACK_BOUNDS)
+    return bounds
 
 
 # --- Serving -----------------------------------------------------------------
