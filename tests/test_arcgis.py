@@ -230,3 +230,129 @@ class TestChunkList:
 
     def test_empty(self):
         assert list(arcgis.chunk_list([], 2)) == []
+
+
+# The projection the National Grid services are actually published in. It has
+# no EPSG code, which is the whole reason spatial_reference_of exists.
+NG_WKT = (
+    'PROJCS["NG_Equidistant_Conic_USft",GEOGCS["GCS_WGS_1984",'
+    'DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],'
+    'PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],'
+    'PROJECTION["Equidistant_Conic"],PARAMETER["False_Easting",0.0],'
+    'PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-74.0],'
+    'PARAMETER["Standard_Parallel_1",42.0],PARAMETER["Standard_Parallel_2",44.0],'
+    'PARAMETER["Latitude_Of_Origin",43.0],UNIT["Foot_US",0.3048006096012192]]'
+)
+
+
+class TestSpatialReference:
+    def test_a_wkid_is_read(self):
+        layer_crs, wkid, _ = arcgis.spatial_reference_of(
+            {"extent": {"spatialReference": {"wkid": 2249}}})
+        assert layer_crs == "EPSG:2249"
+        assert wkid == 2249
+
+    def test_latest_wkid_is_preferred_over_wkid(self):
+        layer_crs, wkid, _ = arcgis.spatial_reference_of(
+            {"spatialReference": {"wkid": 102100, "latestWkid": 3857}})
+        assert wkid == 3857
+        assert layer_crs == "EPSG:3857"
+
+    def test_a_custom_projection_is_read_from_its_wkt(self):
+        """The defect that put every feature 600 miles out to sea.
+
+        The National Grid services publish in a custom projection with no EPSG
+        code, so its spatialReference is a bare {"wkt": ...}. Reading only
+        wkid/latestWkid returned None, the frame was labelled with the fallback
+        zone instead, and every position was wrong while the numbers stayed
+        plausible - nothing raised.
+        """
+        layer_crs, wkid, raw = arcgis.spatial_reference_of(
+            {"extent": {"spatialReference": {"wkt": NG_WKT}}})
+        assert wkid is None
+        assert layer_crs == NG_WKT
+        assert raw["wkt"] == NG_WKT
+
+    def test_the_custom_projection_is_usable_and_foot_based(self):
+        from pipelineinsertion import crs as crs_module
+
+        layer_crs, _, _ = arcgis.spatial_reference_of(
+            {"spatialReference": {"wkt": NG_WKT}})
+        # Foot-based, so the analysis keeps it and measures distances directly.
+        assert crs_module.is_foot_based(layer_crs) is True
+        assert crs_module.analysis_crs(layer_crs).name == "NG_Equidistant_Conic_USft"
+
+    def test_wkt_wins_when_both_are_present(self):
+        # The WKT is the more specific of the two.
+        layer_crs, _, _ = arcgis.spatial_reference_of(
+            {"spatialReference": {"wkid": 4326, "wkt": NG_WKT}})
+        assert layer_crs == NG_WKT
+
+    def test_the_layer_extent_is_preferred_over_the_service(self):
+        layer_crs, _, _ = arcgis.spatial_reference_of({
+            "extent": {"spatialReference": {"wkid": 2249}},
+            "spatialReference": {"wkid": 4326},
+        })
+        assert layer_crs == "EPSG:2249"
+
+    def test_nothing_at_all_is_none_rather_than_a_guess(self):
+        layer_crs, wkid, raw = arcgis.spatial_reference_of({})
+        assert layer_crs is None and wkid is None and raw == {}
+
+    def test_a_custom_projection_is_not_reprojected_by_outsr(self):
+        """No wkid means no outSR, so the service answers in its own reference.
+
+        Sending an outSR the layer does not have would silently reproject the
+        geometries away from the CRS the frame is then labelled with.
+        """
+        layer_crs, wkid, _ = arcgis.spatial_reference_of(
+            {"spatialReference": {"wkt": NG_WKT}})
+        assert wkid is None      # so `if meta.get("wkid")` skips outSR
+        assert layer_crs is not None   # but the frame is still labelled
+
+
+class TestCacheRejectsAnUnlabelledFrame:
+    def test_a_cache_with_no_crs_is_refreshed(self, tmp_path, monkeypatch):
+        """A cache written before the WKT was read carries no CRS.
+
+        Nothing downstream can recover one, so it has to be re-downloaded -
+        without the user needing to know why.
+        """
+        import geopandas as gpd
+        from shapely.geometry import LineString
+
+        monkeypatch.setattr(config, "LAYER_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(config, "USE_LAYER_CACHE", True)
+        monkeypatch.setattr(config, "FORCE_LAYER_REFRESH", False)
+
+        data_path, meta_path = arcgis.layer_cache_paths("main_lines")
+        gpd.GeoDataFrame(
+            {"OBJECTID": [1]}, geometry=[LineString([(0, 0), (1, 1)])], crs=None
+        ).to_pickle(data_path, compression="gzip")
+        meta_path.write_text(json.dumps({
+            "layer_url": "u", "where_clause": "1=1",
+            "out_field_signature": arcgis.out_field_request_signature(),
+        }))
+
+        cached, meta = arcgis.read_layer_cache("main_lines", "u", "1=1")
+        assert cached is None, "an unlabelled cache must force a full refresh"
+
+    def test_a_cache_with_a_crs_is_used(self, tmp_path, monkeypatch):
+        import geopandas as gpd
+        from shapely.geometry import LineString
+
+        monkeypatch.setattr(config, "LAYER_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(config, "USE_LAYER_CACHE", True)
+        monkeypatch.setattr(config, "FORCE_LAYER_REFRESH", False)
+
+        data_path, meta_path = arcgis.layer_cache_paths("main_lines")
+        gpd.GeoDataFrame(
+            {"OBJECTID": [1]}, geometry=[LineString([(0, 0), (1, 1)])],
+            crs="EPSG:2249").to_pickle(data_path, compression="gzip")
+        meta_path.write_text(json.dumps({
+            "layer_url": "u", "where_clause": "1=1",
+            "out_field_signature": arcgis.out_field_request_signature(),
+        }))
+
+        cached, meta = arcgis.read_layer_cache("main_lines", "u", "1=1")
+        assert cached is not None and len(cached) == 1

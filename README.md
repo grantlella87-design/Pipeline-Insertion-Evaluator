@@ -513,7 +513,7 @@ src/pipelineinsertion/
     nearest.py      near analysis, connection paths, candidate selection
     crs.py          choosing a coordinate system distances can be measured in
     schema.py       the layer and column names this project writes
-scripts/            diagnostics: sign-in, layer description
+scripts/            diagnostics: sign-in, layer description, funnel report
 tests/              the rules, tested offline
 ```
 
@@ -521,13 +521,29 @@ No threshold is written into a filter expression. The GSEP material codes, the
 bucket boundaries, the coated-steel cut-off and the 50 ft proximity test are all
 in `config.py`, and each can be overridden with an environment variable.
 
+## When the output looks wrong
+
+```text
+python scripts/diagnose.py
+```
+
+An empty map has several possible causes that look identical from the browser:
+no GeoPackage, a download that returned nothing, a filter that matched nothing,
+a dissolve that produced nothing, or coordinates in the wrong place. This walks
+the same stages the workflow does and prints the count after each, so the stage
+that lost the features names itself. It also reports where the data actually
+sits on the earth and says so loudly when that is not Massachusetts.
+
+It runs off the layer cache, so it needs no token and no network, and it
+changes nothing. Add `--where` to print the SQL for each stage.
+
 ## Tests
 
 ```text
 python -m pytest
 ```
 
-369 tests, none of which need a network, an ArcGIS token or a GIS install. They
+379 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
@@ -610,6 +626,25 @@ Cast iron with no nominal diameter, and coated steel with no installation date,
 have a threshold to test and no value to test it against. Those mains are
 excluded and their `GSEP_REASON` records which value was missing, rather than
 being defaulted in either direction.
+
+## The service's projection has no EPSG code
+
+MA Pressure View is published in a custom projection,
+`NG_Equidistant_Conic_USft`, whose `spatialReference` arrives as a bare
+`{"wkt": ...}` with no `wkid`. Code that reads only `wkid`/`latestWkid` gets
+nothing back, and the geometries are then labelled with the fallback zone
+instead - which puts every feature about 600 miles out to sea, off South
+Carolina, while raising nothing and leaving the numbers looking plausible.
+
+`arcgis.spatial_reference_of` therefore reads the WKT before the wkid. The
+projection measures in US survey feet, so the analysis keeps it and no
+reprojection happens before distances are measured. When a layer has no wkid,
+no `outSR` is requested either - the service answers in its own reference,
+which is the one the frame is labelled with.
+
+A layer cache written before this was fixed carries no CRS at all, and nothing
+downstream can recover one. Such a cache is detected on read and re-downloaded
+automatically.
 
 ## Distances need a foot-based coordinate system
 
