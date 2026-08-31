@@ -92,6 +92,27 @@ def build_systems(mains, resolved, bucket_name):
     )
 
 
+def drop_unusable_geometry(frame, layer_name):
+    """Remove rows whose geometry cannot be written or read back.
+
+    The last line of defence before the GeoPackage. A geometry with NaN
+    coordinates writes without complaint and then poisons everything
+    downstream: reading it back warns "invalid value encountered in from_wkb",
+    the layer's `total_bounds` becomes NaN, and the map that frames itself on
+    those bounds gets NaN and dies.
+
+    Whatever produced such a row is a bug worth fixing at its source - this
+    reports the count rather than quietly cleaning up after it.
+    """
+    usable = frame.geometry.notna() & ~frame.geometry.is_empty & frame.geometry.is_valid
+    dropped = int((~usable).sum())
+    if dropped:
+        warn(f"{layer_name}: {dropped:,} of {len(frame):,} features have "
+             f"unusable geometry and are not written. This is a defect "
+             f"upstream of the write, not a property of the data.")
+    return frame[usable].copy()
+
+
 def write_outputs(layers):
     """Write every non-empty layer to the GeoPackage.
 
@@ -121,6 +142,7 @@ def write_outputs(layers):
         if len(frame):
             frame["geometry"] = frame.geometry.apply(systems.multipart)
             frame = frame[frame.geometry.notna()].copy()
+            frame = drop_unusable_geometry(frame, name)
         frame.to_file(target, layer=name, driver="GPKG")
         written[name] = len(frame)
         log(f"  {name}: {len(frame):,} features")

@@ -31,6 +31,8 @@ _PACKAGE_PARENT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 if _PACKAGE_PARENT not in _sys.path:
     _sys.path.insert(0, _PACKAGE_PARENT)
 
+import math
+
 from shapely.geometry import LineString
 from shapely.ops import nearest_points
 from shapely.strtree import STRtree
@@ -110,17 +112,45 @@ def candidate_status(distance_ft, candidate_psi, target_psi,
     return True, STATUS_CANDIDATE
 
 
+def is_missing(value):
+    """True for None and for NaN.
+
+    Both mean "no value here", and they have to be tested for together. A
+    system with no target in range gets None written into its coordinate
+    columns, but the frame those columns live in is float64 - so pandas stores
+    NaN, and NaN is not None:
+
+        None in (nan, nan)        -> False
+        (nan, nan) == (nan, nan)  -> False for distinct NaN objects
+
+    A `None`-only guard therefore let NaN through, and the result was
+    `LINESTRING (NaN NaN, NaN NaN)` written into the GeoPackage. Nothing
+    raised. Reading it back warned "invalid value encountered in from_wkb",
+    `total_bounds` on that layer returned NaN, the map's centre became NaN, and
+    `fitBounds` was handed NaN - which killed the page's script and emptied
+    every layer.
+    """
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def connection_path(from_x, from_y, near_x, near_y):
     """The shortest path from a candidate to its target, as a line.
 
-    Returns None for a zero-length path. Two systems that touch produce
-    identical endpoints, and a zero-length LineString is rejected by some
-    GeoPackage readers and drawn as nothing by the rest - so the pair is
-    dropped from the path layer while keeping its row in the near table.
+    Returns None when there is no target - the coordinates are then absent -
+    and for a zero-length path. Two systems that touch produce identical
+    endpoints, and a zero-length LineString is rejected by some GeoPackage
+    readers and drawn as nothing by the rest, so that pair is dropped from the
+    path layer while keeping its row in the near table.
     """
-    if None in (from_x, from_y, near_x, near_y):
+    corners = (from_x, from_y, near_x, near_y)
+    if any(is_missing(value) for value in corners):
         return None
-    if (from_x, from_y) == (near_x, near_y):
+    if (float(from_x), float(from_y)) == (float(near_x), float(near_y)):
         return None
     return LineString([(from_x, from_y), (near_x, near_y)])
 
@@ -228,6 +258,10 @@ def _paths_from(near_table):
 
     rows = []
     for _, near in near_table.iterrows():
+        if not str(near[schema.NEAREST_EP_ID] or "").strip():
+            # No target was found, so there is no path to draw. Its row stays
+            # in the near table, which is where "nothing in range" is reported.
+            continue
         line = connection_path(near[schema.FROM_X], near[schema.FROM_Y],
                                near[schema.NEAR_X], near[schema.NEAR_Y])
         if line is None:
@@ -252,15 +286,13 @@ def _report(near_table):
 
 
 def _optional_float(value):
+    """A float, or None for anything that means "no value" - NaN included."""
+    if is_missing(value):
+        return None
     try:
-        if value is None:
-            return None
-        value = float(value)
+        return float(value)
     except (TypeError, ValueError):
         return None
-    if value != value:  # NaN, which pandas puts in for a missing float
-        return None
-    return value
 
 
 def _empty_near(crs):
