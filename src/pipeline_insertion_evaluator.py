@@ -113,6 +113,27 @@ def drop_unusable_geometry(frame, layer_name):
     return frame[usable].copy()
 
 
+def check_column_names(frame, layer_name):
+    """Fail early on column names a GeoPackage cannot hold.
+
+    Field names in a GeoPackage are case-insensitive, so a frame carrying both
+    `nominaldiameter` and `NOMINALDIAMETER` cannot be written. GDAL reports
+    that as `FieldError: Error adding field 'NOMINALDIAMETER' to layer` and
+    says nothing about the collision, which is a long way from the cause.
+    """
+    seen = {}
+    collisions = {}
+    for name in frame.columns:
+        key = str(name).lower()
+        if key in seen and seen[key] != name:
+            collisions.setdefault(key, {seen[key]}).add(name)
+        seen[key] = name
+    if collisions:
+        fail(f"{layer_name} has column names that differ only in case, which a "
+             f"GeoPackage cannot hold: "
+             f"{ {k: sorted(v) for k, v in collisions.items()} }")
+
+
 def write_outputs(layers):
     """Write every non-empty layer to the GeoPackage.
 
@@ -139,6 +160,7 @@ def write_outputs(layers):
         if gdf is None:
             continue
         frame = gdf.copy()
+        check_column_names(frame, name)
         if len(frame):
             frame["geometry"] = frame.geometry.apply(systems.multipart)
             frame = frame[frame.geometry.notna()].copy()
@@ -173,7 +195,8 @@ def main():
 
     with timed("classify"):
         classified = classify.classify(
-            mains, resolved, domains.material_labels(layer_json))
+            mains, resolved, domains.material_labels(layer_json),
+            layer_json=layer_json)
         lower_mains = classify.lower_pressure_candidates(classified)
         other_mains = classify.other_pressure_targets(classified)
 

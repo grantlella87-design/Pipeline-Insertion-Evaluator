@@ -543,7 +543,7 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-390 tests, none of which need a network, an ArcGIS token or a GIS install. They
+431 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
@@ -678,6 +678,65 @@ understates every distance by 3.28, turning a 50 ft filter into a 164 ft one.
 Neither raises. The layer's own spatial reference is used when it already
 measures in feet, and `FALLBACK_ANALYSIS_EPSG` (2249, NAD83 / Massachusetts
 Mainland ftUS) otherwise.
+
+## Attributes on the pipeline layers
+
+Every per-main layer carries the source attributes a reviewer asks for, each
+coded value written twice - the raw code and its decoded label:
+
+| Column | From |
+|--------|------|
+| `ASSETGROUP` / `ASSETGROUP_DECODED` | the layer's subtype, e.g. `2` / `Distribution Pipe` |
+| `ASSETTYPE` / `ASSETTYPE_DECODED` | material, e.g. `2` / `Cast Iron` |
+| `NOMINALDIAMETER` | as recorded |
+| `INSTALLATIONDATE` / `INSTALLATIONDATE_ISO` | epoch ms, and the readable date |
+| `CPSUBNETWORKNAME` | the cathodic protection subnetwork |
+
+The raw code is kept as well as the label because the code is what the
+production query filters on and what a record traces back to; a label can be
+edited on the service without the meaning changing.
+
+### ASSETTYPE is decoded on the (ASSETGROUP, ASSETTYPE) pair
+
+`ASSETGROUP` is the layer's `typeIdField`, and each of its eleven subtypes
+carries **its own ASSETTYPE domain** - 99 coded pairs in total. A code
+therefore only means something once the subtype is known, so the decode uses
+the pair rather than flattening to `{code: label}`.
+
+For the five GSEP codes the flat answer happens to be the same: all of 1, 2, 3,
+5 and 12 mean Bare Steel, Cast Iron, Coated Steel, Copper and Wrought Iron
+under every subtype that defines them. **That is a fact about this data, and
+`tests/test_main_line_attributes.py` checks it against the committed metadata
+rather than assuming it** - it is what makes the flat production query correct.
+Code 999 already differs (`UNK` under one subtype, `Unknown Type` under
+another) and is reported as its code rather than a label that would be wrong
+for some rows.
+
+### Dissolved systems summarise their mains
+
+A system is many mains, so a single ASSETTYPE would be a lie. What survives a
+dissolve honestly is the set and the range:
+
+| Column | Meaning |
+|--------|---------|
+| `MATERIALS` | every distinct decoded material, e.g. `Cast Iron;Copper` |
+| `ASSETGROUPS` | every distinct subtype |
+| `MIN_DIAMETER` / `MAX_DIAMETER` | the range across the mains |
+| `EARLIEST_INSTALL` / `LATEST_INSTALL` | oldest and newest installation date |
+| `CP_SUBNETWORKS` | every CP subnetwork touched |
+| `CP_SUBNETWORK_COUNT` | how many - a count, not a string to parse |
+
+`CP_SUBNETWORK_COUNT` is called out separately because a system spanning two
+cathodic protection subnetworks is a real constructability finding, and nobody
+filters on a semicolon-separated list.
+
+### Plastic, now that the domain is readable
+
+The layer publishes five plastics: `7 Plastic ABS`, `8 Plastic Other`,
+`9 Plastic PE`, `10 Plastic PVC`, `13 Polybutylene`.
+`domains.plastic_assettypes()` lists them from the metadata. None is GSEP
+eligible until its code is added to `config.PLASTIC_ASSETTYPES` - listing what
+the service publishes is not the same as deciding which count.
 
 ## Two additions to the layer inventory
 

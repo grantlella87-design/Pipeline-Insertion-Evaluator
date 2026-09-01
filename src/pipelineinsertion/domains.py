@@ -183,3 +183,113 @@ def check_pressure_units(layer_json=None):
     if ok:
         detail(f"Pressure-units domain matches the configured codes: {labels}")
     return ok
+
+
+# --- Subtype-aware decoding ---------------------------------------------------
+
+
+def assetgroup_labels(layer_json):
+    """{ASSETGROUP code: subtype name} from the layer's `types`.
+
+    ASSETGROUP is the layer's `typeIdField`, so its "domain" is the subtype
+    list itself rather than a coded-value domain on the field.
+    """
+    if not layer_json:
+        return {}
+    labels = {}
+    for subtype in layer_json.get("types", []) or []:
+        code = _code(subtype.get("id"))
+        if code is not None:
+            labels[code] = subtype.get("name")
+    return labels
+
+
+def subtype_decoder(layer_json, field_name):
+    """{(ASSETGROUP code, value code): label} for a per-subtype domain.
+
+    The honest shape for this data. On Main Lines every ASSETGROUP carries its
+    own ASSETTYPE domain - eleven of them - so a code only means something
+    once you know which subtype the row is in. Flattening to {code: label}
+    happens to be safe for the five GSEP codes, which mean the same thing under
+    every group, but it is not safe in general: code 999 is already "UNK" under
+    one group and "Unknown Type" under another, and nothing stops a future
+    code from differing in a way that matters.
+
+    Decoding on the pair costs nothing and cannot be wrong, so that is what
+    `decode` does; `labels_for` stays for the places that genuinely want one
+    label per code, such as checking a units domain.
+    """
+    decoder = {}
+    if not layer_json:
+        return decoder
+    for subtype in layer_json.get("types", []) or []:
+        group = _code(subtype.get("id"))
+        for name, domain in (subtype.get("domains") or {}).items():
+            if str(name).lower() != str(field_name).lower():
+                continue
+            for coded in (domain or {}).get("codedValues", []) or []:
+                code = _code(coded.get("code"))
+                if code is not None:
+                    decoder[(group, code)] = coded.get("name")
+    return decoder
+
+
+def decode(decoder, group, code, fallback=None):
+    """The label for one (subtype, value) pair.
+
+    Falls back to a match on the code alone when the pair is not in the
+    decoder - a row whose ASSETGROUP is missing or is a subtype the metadata
+    copy does not cover still gets named where the code is unambiguous. When
+    even that is ambiguous the code is returned as text, because a label that
+    might belong to a different subtype is worse than no label.
+    """
+    group_code, value_code = _code(group), _code(code)
+    if value_code is None:
+        return fallback if fallback is not None else ""
+
+    if (group_code, value_code) in decoder:
+        return decoder[(group_code, value_code)]
+
+    candidates = {label for (_, other), label in decoder.items()
+                  if other == value_code}
+    if len(candidates) == 1:
+        return candidates.pop()
+    if fallback is not None:
+        return fallback
+    return str(value_code)
+
+
+def decode_series(decoder, groups, codes, fallback_labels=None):
+    """`decode` over two aligned sequences, for a whole column at a time."""
+    fallback_labels = fallback_labels or {}
+    return [decode(decoder, group, code,
+                   fallback=fallback_labels.get(_code(code)))
+            for group, code in zip(groups, codes)]
+
+
+def assettype_decoder(layer_json=None):
+    """The (ASSETGROUP, ASSETTYPE) -> material decoder for Main Lines."""
+    layer_json = layer_json or reference_layer_json(config.MAIN_LINES_LAYER_ID)
+    decoder = subtype_decoder(layer_json, "ASSETTYPE")
+    detail(f"ASSETTYPE decoder: {len(decoder)} (ASSETGROUP, ASSETTYPE) pairs "
+           f"across {len({group for group, _ in decoder})} subtypes.")
+    return decoder
+
+
+def plastic_assettypes(layer_json=None):
+    """{code: label} for every ASSETTYPE whose label names a plastic.
+
+    Reported, not acted on. The README leaves plastic GSEP eligibility open
+    until the program confirms which of these count, and guessing from the
+    label would quietly change the candidate list. This is here so the choice
+    can be made from what the service actually publishes rather than from
+    memory - see `config.PLASTIC_ASSETTYPES`.
+    """
+    layer_json = layer_json or reference_layer_json(config.MAIN_LINES_LAYER_ID)
+    terms = ("plastic", "poly", "pvc", "abs", "pe ", "hdpe", "mdpe")
+    found = {}
+    for (_, code), label in subtype_decoder(layer_json, "ASSETTYPE").items():
+        text = str(label or "").lower()
+        if any(term in text for term in terms):
+            found[code] = label
+    return dict(sorted(found.items()))

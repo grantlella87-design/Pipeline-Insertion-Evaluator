@@ -82,6 +82,13 @@ PRESSURE_CANDIDATES = ("OPERATINGPRESSURE", "operatingpressure")
 PRESSURE_UNITS_CANDIDATES = ("pressureunits", "PRESSUREUNITS", "unitsforpressure")
 MAOP_CANDIDATES = ("MAOPRECORD", "maoprecord", "maop", "MAOP", "maopdesign")
 
+# The cathodic protection subnetwork a main belongs to. Not part of any rule -
+# carried through to the output because an insertion candidate is reviewed
+# against the CP scheme it would join, and looking that up per candidate
+# afterwards is the kind of manual step this workflow exists to remove.
+CPSUBNETWORK_CANDIDATES = ("cpsubnetworkname", "CPSUBNETWORKNAME",
+                           "cp_subnetwork_name", "cpsubnetwork")
+
 OUT_FIELD_GROUPS = (
     OBJECTID_CANDIDATES,
     GLOBALID_CANDIDATES,
@@ -93,6 +100,7 @@ OUT_FIELD_GROUPS = (
     PRESSURE_CANDIDATES,
     PRESSURE_UNITS_CANDIDATES,
     MAOP_CANDIDATES,
+    CPSUBNETWORK_CANDIDATES,
     MODIFIED_FIELD_CANDIDATES,
 )
 
@@ -292,6 +300,7 @@ def resolve_fields(field_names, layer_name):
         "pressure": resolve_field_name(field_names, PRESSURE_CANDIDATES),
         "pressure_units": resolve_field_name(field_names, PRESSURE_UNITS_CANDIDATES),
         "maop": resolve_field_name(field_names, MAOP_CANDIDATES),
+        "cpsubnetwork": resolve_field_name(field_names, CPSUBNETWORK_CANDIDATES),
         "modified": resolve_field_name(field_names, MODIFIED_FIELD_CANDIDATES),
     }
 
