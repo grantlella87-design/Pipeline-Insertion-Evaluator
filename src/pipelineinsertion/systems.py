@@ -36,7 +36,13 @@ from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 
 from pipelineinsertion import config, schema
-from pipelineinsertion.fields import clean, normalize_key
+from pipelineinsertion.fields import (
+    clean,
+    epoch_ms_to_iso,
+    normalize_key,
+    parse_number,
+    to_epoch_ms,
+)
 from pipelineinsertion.output import detail, log
 
 # Prefix on a SYSTEM_ID, by bucket. Which bucket a system is in is the first
@@ -179,6 +185,52 @@ def dissolve_geometries(geometries):
     return simplified
 
 
+def summarise_attributes(member):
+    """Roll a component's mains up into one row's worth of attributes.
+
+    A dissolved system is many mains, so a single ASSETTYPE would be a lie.
+    What survives a dissolve honestly is the set of what went in and the range
+    it spans, which is also what a reviewer actually asks: what is this made
+    of, how old is it, how big is it, and does it cross a CP boundary.
+
+    CP_SUBNETWORK_COUNT is called out separately because a system spanning two
+    cathodic protection subnetworks is a real constructability finding, and a
+    semicolon-separated list is not something anyone filters on.
+    """
+    def distinct(column):
+        if column not in member.columns:
+            return []
+        seen = {clean(value) for value in member[column]}
+        return sorted(value for value in seen if value)
+
+    materials = distinct(schema.ASSETTYPE_DECODED)
+    assetgroups = distinct(schema.ASSETGROUP_DECODED)
+    subnetworks = distinct(schema.CP_SUBNETWORK)
+
+    diameters = []
+    if schema.NOMINAL_DIAMETER in member.columns:
+        diameters = [value for value in
+                     (parse_number(v) for v in member[schema.NOMINAL_DIAMETER])
+                     if value is not None]
+
+    installed = []
+    if schema.INSTALLATION_DATE in member.columns:
+        installed = [value for value in
+                     (to_epoch_ms(v) for v in member[schema.INSTALLATION_DATE])
+                     if value is not None]
+
+    return {
+        schema.MATERIALS: ";".join(materials),
+        schema.ASSETGROUPS: ";".join(assetgroups),
+        schema.MIN_DIAMETER: min(diameters) if diameters else None,
+        schema.MAX_DIAMETER: max(diameters) if diameters else None,
+        schema.EARLIEST_INSTALL: epoch_ms_to_iso(min(installed)) if installed else "",
+        schema.LATEST_INSTALL: epoch_ms_to_iso(max(installed)) if installed else "",
+        schema.CP_SUBNETWORKS: ";".join(subnetworks),
+        schema.CP_SUBNETWORK_COUNT: len(subnetworks),
+    }
+
+
 def dissolve(gdf, guid_field, legacy_field):
     """Dissolve classified mains into systems.
 
@@ -229,7 +281,7 @@ def dissolve(gdf, guid_field, legacy_field):
             # A first pressure rather than the group key: the key was rounded
             # for grouping, and the output should carry the recorded value.
             first = member.iloc[0]
-            rows.append({
+            row = {
                 schema.SYSTEM_ID: system_id(bucket, ids_text),
                 schema.PRESSURE_BUCKET: bucket,
                 schema.SYSTEM_PRESSURE: float(first[schema.PRESSURE]),
@@ -237,9 +289,11 @@ def dissolve(gdf, guid_field, legacy_field):
                 schema.SYSTEM_PRESSURE_UNITS: first[schema.PRESSURE_UNITS],
                 schema.MAIN_COUNT: int(len(member)),
                 schema.LENGTH_FT: round(float(geometry.length), 2),
-                schema.SOURCE_IDS: ids_text,
-                "geometry": geometry,
-            })
+            }
+            row.update(summarise_attributes(member))
+            row[schema.SOURCE_IDS] = ids_text
+            row["geometry"] = geometry
+            rows.append(row)
 
     if not rows:
         return _empty_systems(gdf.crs)
@@ -283,7 +337,9 @@ def _empty_systems(crs):
     columns = [
         schema.SYSTEM_ID, schema.PRESSURE_BUCKET, schema.SYSTEM_PRESSURE,
         schema.SYSTEM_PRESSURE_PSI, schema.SYSTEM_PRESSURE_UNITS,
-        schema.MAIN_COUNT, schema.LENGTH_FT, schema.SOURCE_IDS,
+        schema.MAIN_COUNT, schema.LENGTH_FT,
+        *schema.SYSTEM_ATTRIBUTE_FIELDS,
+        schema.SOURCE_IDS,
     ]
     frame = pd.DataFrame({name: [] for name in columns})
     frame["geometry"] = []

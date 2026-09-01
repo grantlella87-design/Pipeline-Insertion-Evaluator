@@ -38,6 +38,36 @@ NEAR_AUDIT_TABLE = "LPP_GSEP_NearAudit"
 GSEP_ELIGIBLE = "GSEP_ELIGIBLE"
 GSEP_REASON = "GSEP_REASON"
 MATERIAL = "MATERIAL"
+
+# The source attributes an engineer reviewing a candidate asks for, carried
+# through to every pipeline layer with their coded values decoded beside them.
+# The raw code is kept as well as the label: the code is what the production
+# query filters on and what a record traces back to, and a label can be edited
+# on the service without the meaning changing.
+ASSETTYPE = "ASSETTYPE"
+ASSETTYPE_DECODED = "ASSETTYPE_DECODED"
+# ASSETGROUP is the layer's typeIdField, so it selects which ASSETTYPE domain
+# applies. It has to travel with ASSETTYPE for the decode to be reproducible.
+ASSETGROUP = "ASSETGROUP"
+ASSETGROUP_DECODED = "ASSETGROUP_DECODED"
+NOMINAL_DIAMETER = "NOMINALDIAMETER"
+INSTALLATION_DATE = "INSTALLATIONDATE"
+# Written as an ISO date beside the raw epoch value, because a GeoPackage
+# column of epoch milliseconds is unreadable in a desktop GIS.
+INSTALLATION_DATE_ISO = "INSTALLATIONDATE_ISO"
+CP_SUBNETWORK = "CPSUBNETWORKNAME"
+
+# Every attribute column a per-main pipeline layer carries, in reading order.
+MAIN_ATTRIBUTE_FIELDS = (
+    ASSETGROUP,
+    ASSETGROUP_DECODED,
+    ASSETTYPE,
+    ASSETTYPE_DECODED,
+    NOMINAL_DIAMETER,
+    INSTALLATION_DATE,
+    INSTALLATION_DATE_ISO,
+    CP_SUBNETWORK,
+)
 PRESSURE_BUCKET = "PRESSURE_BUCKET"
 # The pressure the classification was made on - OPERATINGPRESSURE, or MAOPRECORD
 # where the first was null - kept alongside the unit it was recorded in.
@@ -59,6 +89,31 @@ SYSTEM_PRESSURE_UNITS = "SYSTEM_PRESSURE_UNITS"
 # How many source mains dissolved into this system, and their total length.
 MAIN_COUNT = "MAIN_COUNT"
 LENGTH_FT = "LENGTH_FT"
+
+# A dissolved system is many mains, so a single ASSETTYPE would be a lie. These
+# summarise what went into it: every distinct material, the diameter range, the
+# oldest and newest installation date, and every CP subnetwork touched. A
+# system spanning two CP subnetworks is a real constructability finding, and it
+# is invisible unless the dissolve says so.
+MATERIALS = "MATERIALS"
+ASSETGROUPS = "ASSETGROUPS"
+MIN_DIAMETER = "MIN_DIAMETER"
+MAX_DIAMETER = "MAX_DIAMETER"
+EARLIEST_INSTALL = "EARLIEST_INSTALL"
+LATEST_INSTALL = "LATEST_INSTALL"
+CP_SUBNETWORKS = "CP_SUBNETWORKS"
+CP_SUBNETWORK_COUNT = "CP_SUBNETWORK_COUNT"
+
+SYSTEM_ATTRIBUTE_FIELDS = (
+    MATERIALS,
+    ASSETGROUPS,
+    MIN_DIAMETER,
+    MAX_DIAMETER,
+    EARLIEST_INSTALL,
+    LATEST_INSTALL,
+    CP_SUBNETWORKS,
+    CP_SUBNETWORK_COUNT,
+)
 # {GUID}|LegacyID;{GUID}|LegacyID - see systems.source_ids.
 SOURCE_IDS = "SOURCE_IDS"
 

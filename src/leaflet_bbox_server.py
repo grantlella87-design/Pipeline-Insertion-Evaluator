@@ -119,8 +119,23 @@ POPUP_FIELD_ORDER = (
     schema.NEAREST_EP_PRESSURE,
     schema.NEAREST_EP_PRESSURE_PSI,
     schema.PRESSURE_BUCKET,
+    # What the system is made of, how old it is and which CP subnetwork it sits
+    # in - the attributes a constructability review asks for, on the feature
+    # rather than in a separate lookup.
+    schema.MATERIALS,
+    schema.ASSETTYPE_DECODED,
+    schema.ASSETGROUP_DECODED,
     schema.MATERIAL,
     schema.GSEP_REASON,
+    schema.NOMINAL_DIAMETER,
+    schema.MIN_DIAMETER,
+    schema.MAX_DIAMETER,
+    schema.INSTALLATION_DATE_ISO,
+    schema.EARLIEST_INSTALL,
+    schema.LATEST_INSTALL,
+    schema.CP_SUBNETWORK,
+    schema.CP_SUBNETWORKS,
+    schema.CP_SUBNETWORK_COUNT,
     schema.MAIN_COUNT,
     schema.LENGTH_FT,
     schema.SOURCE_IDS,
