@@ -33,7 +33,6 @@ import os as _os
 import re
 import shutil as _shutil
 import sqlite3
-import subprocess
 import sys as _sys
 import tempfile
 import threading
@@ -290,6 +289,17 @@ def get_oob_authorization_code(start_epoch_seconds):
     )
 
 
+# The page the browser lands on after the portal redirects back. It closes
+# itself, and when the browser refuses - which it does for any tab the script
+# did not open - it says the tab can be closed instead.
+#
+# There used to be a third fallback: a PowerShell process that hunted for this
+# window by title and sent it Ctrl+W. It ran on the out-of-band flow too, where
+# there is no such tab to find, and it sat between saving the token and
+# returning it - so an interrupt while PowerShell was starting (slow on a
+# machine with endpoint scanning) lost a sign-in that had already succeeded.
+# Sending a global Ctrl+W was also its own hazard: the keystroke goes to
+# whatever window is focused at that instant, not necessarily the one it meant.
 LOOPBACK_SUCCESS_PAGE = b"""<!doctype html>
 <html>
 <head>
@@ -376,43 +386,6 @@ def authorize_url_is_accepted(session, authorize_url, redirect_uri):
         "PIPEINSERT_LOOPBACK_OAUTH=0 to skip the loopback flow."
     )
     return False
-
-
-def close_loopback_callback_tab():
-    """Best-effort close of the browser tab that displayed the loopback success page."""
-    ps_script = r'''
-$title = 'ArcGIS Loopback Sign-in Complete'
-$shell = New-Object -ComObject WScript.Shell
-Start-Sleep -Milliseconds 500
-$activated = $false
-for ($i = 0; $i -lt 20; $i++) {
-    if ($shell.AppActivate($title)) {
-        $activated = $true
-        break
-    }
-    Start-Sleep -Milliseconds 200
-}
-if ($activated) {
-    Start-Sleep -Milliseconds 200
-    $shell.SendKeys('^w')
-}
-'''
-    try:
-        subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                ps_script,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except Exception as ex:
-        detail(f"Could not auto-close loopback browser tab: {ex}")
 
 
 def capture_loopback_authorization_code(authorize_url, timeout_seconds=180):
@@ -536,8 +509,11 @@ def interactive_access_token(session):
     keyring_set(config.KEYRING_ACCESS_TOKEN_USER, token)
     keyring_set(config.KEYRING_ACCESS_TOKEN_EXPIRES_USER, expires_epoch)
     log("Saved ArcGIS Portal access token to Windows Credential Manager.")
-    close_loopback_callback_tab()
+    # Nothing goes between saving the token and returning it. The tab that
+    # showed the callback page closes itself, and says so when the browser
+    # refuses - see LOOPBACK_SUCCESS_PAGE.
     return token
+
 
 def get_arcgis_token(session=None):
     active_session = session if session is not None else requests.Session()
