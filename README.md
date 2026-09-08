@@ -513,6 +513,7 @@ src/pipelineinsertion/
     nearest.py      near analysis, connection paths, candidate selection
     crs.py          choosing a coordinate system distances can be measured in
     schema.py       the layer and column names this project writes
+    dashboard.py    the summary page; dashboard_metrics.py its numbers
 scripts/            diagnostics: sign-in, layer description, funnel report
 tests/              the rules, tested offline
 ```
@@ -520,6 +521,44 @@ tests/              the rules, tested offline
 No threshold is written into a filter expression. The GSEP material codes, the
 bucket boundaries, the coated-steel cut-off and the 50 ft proximity test are all
 in `config.py`, and each can be overridden with an environment variable.
+
+## The dashboard
+
+Every run writes `LPP_GSEP_InsertionDashboard.html` beside the GeoPackage, and
+the map links to it at `/dashboard`. Rebuild one from an existing GeoPackage
+without re-running the analysis:
+
+```text
+python scripts/dashboard.py           # write it beside the GeoPackage
+python scripts/dashboard.py --open    # and open it
+```
+
+It answers, in the order people ask: how many candidates, what the other
+systems failed on, how binding the 50 ft threshold is, what the candidates are
+made of, how old they are, whether any cross a CP boundary, and which specific
+systems they are.
+
+It is built **from the written GeoPackage**, not from the frames in memory, so
+it reports the deliverable rather than a parallel answer that could differ from
+it. The page is self-contained - no script, no external library, every chart
+hand-built - so it can be emailed or opened from a share and will draw the same
+everywhere. The map vendors Leaflet for exactly this reason; a dashboard that
+pulled a charting library off a CDN would be the one output that stopped
+working on a machine with no internet.
+
+Two things about the colour, both of which a chart gets wrong by default:
+
+- Every bar chart on the page is a single series, so every bar is one hue. A
+  ramp across nominal categories would spend the only free channel on the
+  length the bar already shows.
+- The one ramp is the funnel, whose stages really are ordered. It is a
+  single-hue ordinal ramp, stepped separately for the light and dark surfaces
+  rather than one reversed for the other, and both runs were checked against
+  their own surface.
+
+The distance histogram marks the 50 ft threshold with a labelled rule rather
+than a second colour, so it survives being printed in greyscale and needs no
+legend.
 
 ## When the output looks wrong
 
@@ -543,7 +582,7 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-431 tests, none of which need a network, an ArcGIS token or a GIS install. They
+479 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -

@@ -41,6 +41,7 @@ from pipelineinsertion import (
     classify,
     config,
     crs,
+    dashboard,
     domains,
     nearest,
     schema,
@@ -226,6 +227,12 @@ def main():
             schema.NEAR_AUDIT_TABLE: near_table,
             schema.CANDIDATES_LAYER: candidates,
         })
+
+    # Built from the written GeoPackage rather than from the frames in memory,
+    # so the dashboard reports the deliverable rather than a parallel answer
+    # that could differ from it.
+    with timed("dashboard"):
+        dashboard.build()
 
     step("Finished")
     log(f"{written.get(schema.CANDIDATES_LAYER, 0):,} insertion candidates from "
