@@ -171,6 +171,144 @@ def percentile(values, fraction):
     return ordered[index]
 
 
+# Length bins for the candidate-length chart, in feet. A system is a run of
+# contiguous mains, so the spread is wide and the interesting end is the short
+# one - a 40 ft system and a 4,000 ft system are different pieces of work.
+LENGTH_BINS = (0, 100, 250, 500, 1000, 2500, 5000, 10000)
+
+
+def mean(values):
+    """The arithmetic mean, or None for nothing to average."""
+    usable = [value for value in values if value is not None]
+    return (sum(usable) / len(usable)) if usable else None
+
+
+def length_stats(frame, column=None):
+    """Total, mean, median and range of a length column.
+
+    Mean and median are both reported because they disagree here and the
+    disagreement is the point: system lengths are heavily right-skewed - a few
+    long runs pull the mean well above the median - so a single "average
+    length" would misdescribe most of the list.
+    """
+    column = column or schema.LENGTH_FT
+    lengths = _numbers(frame, column)
+    return {
+        "count": len(lengths),
+        "total": sum(lengths),
+        "mean": mean(lengths),
+        "median": percentile(lengths, 0.5),
+        "min": min(lengths) if lengths else None,
+        "max": max(lengths) if lengths else None,
+    }
+
+
+def length_histogram(frame, bins=LENGTH_BINS, column=None):
+    """[(label, count, total_ft)] over a length column.
+
+    Each bin carries its footage as well as its count, because "how many
+    systems" and "how much main" are different questions and the second is the
+    one that sizes the work.
+    """
+    column = column or schema.LENGTH_FT
+    lengths = _numbers(frame, column)
+    rows = []
+    for index, lower in enumerate(bins):
+        upper = bins[index + 1] if index + 1 < len(bins) else None
+        if upper is None:
+            inside = [value for value in lengths if value >= lower]
+            label = f"{lower:,.0f}+ ft"
+        else:
+            inside = [value for value in lengths if lower <= value < upper]
+            label = f"{lower:,.0f}–{upper:,.0f} ft"
+        rows.append((label, len(inside), sum(inside)))
+    return rows
+
+
+def geometry_length_ft(frame):
+    """Total length of a frame's geometry, in feet, or None if it cannot be.
+
+    The analysis CRS measures in US survey feet, so a sum of `.length` is
+    already footage. Returning None rather than a number when the CRS is not
+    foot-based is deliberate: a total in degrees or metres presented as feet is
+    worse than no total, and nothing about the number itself would show it.
+    """
+    if frame is None or not len(frame) or "geometry" not in frame:
+        return 0.0
+    try:
+        from pipelineinsertion import crs as crs_module
+
+        if frame.crs is not None and not crs_module.is_foot_based(frame.crs):
+            return None
+        return float(frame.geometry.length.sum())
+    except Exception:  # noqa: BLE001 - a length that cannot be measured is None
+        return None
+
+
+def gsep_length(layers):
+    """Total GSEP-eligible main length, in feet, split by pressure bucket.
+
+    Both written main layers carry GSEP_ELIGIBLE, so this is the whole
+    GSEP-eligible population that reached a bucket. Mains in neither bucket -
+    an unknown pressure unit, say - are in no layer and so are not counted;
+    `classify` reports that count at run time.
+    """
+    lower = layers.get(schema.GSEP_LOWER_PRESSURE_LAYER)
+    other = layers.get(schema.OTHER_PRESSURE_MAINS_LAYER)
+
+    lower_length = geometry_length_ft(lower)
+    other_eligible = None
+    if other is not None and schema.GSEP_ELIGIBLE in getattr(other, "columns", []):
+        other_eligible = geometry_length_ft(other[other[schema.GSEP_ELIGIBLE] == 1])
+
+    total = None
+    if lower_length is not None and other_eligible is not None:
+        total = lower_length + other_eligible
+    elif lower_length is not None and other is None:
+        total = lower_length
+
+    return {
+        # Every main in the GSEP_LPP_LowerPressure layer is GSEP eligible by
+        # construction, so its whole length counts.
+        "lower_pressure": lower_length,
+        "other_pressure": other_eligible,
+        "total": total,
+    }
+
+
+def distance_scan_rows(near):
+    """[(distance_ft, length_ft, pressure_ok)] for the what-if control.
+
+    One row per Lower Pressure system that has a nearest target, which is what
+    lets the page answer "how much main becomes insertable at N ft" without
+    re-running anything. `pressure_ok` is carried separately because distance
+    is the constraint worth relaxing and pressure is not - a target below the
+    candidate's pressure does not become usable by moving a threshold.
+
+    Rounded, because the page embeds these and the precision is not the point.
+    """
+    if near is None or not len(near):
+        return []
+
+    distances = _values(near, schema.DISTANCE_FT)
+    lengths = _values(near, schema.LENGTH_FT)
+    system_psi = _values(near, schema.SYSTEM_PRESSURE_PSI)
+    target_psi = _values(near, schema.NEAREST_EP_PRESSURE_PSI)
+    if not (len(distances) == len(lengths) == len(system_psi) == len(target_psi)):
+        return []
+
+    rows = []
+    for distance, length, mine, theirs in zip(distances, lengths,
+                                              system_psi, target_psi):
+        d = parse_number(distance)
+        if d is None or not math.isfinite(d):
+            continue  # no target at all: no distance would ever include it
+        ok = nearest.candidate_status(d, parse_number(mine), parse_number(theirs),
+                                      max_distance_ft=float("inf"))[0]
+        rows.append((round(d, 1), round(parse_number(length) or 0.0, 1), bool(ok)))
+    return rows
+
+
 def collect(layers):
     """Every number the dashboard shows, from the written GeoPackage layers.
 
@@ -224,6 +362,10 @@ def collect(layers):
         "decades": decade_counts(candidates),
         "subnetworks": subnetwork_counts(candidates),
         "headroom_median": percentile(headroom, 0.5),
+        "length_stats": length_stats(candidates),
+        "length_histogram": length_histogram(candidates),
+        "gsep_length": gsep_length(layers),
+        "distance_scan": distance_scan_rows(near),
         "headroom_min": min(headroom) if headroom else None,
         "crossing_systems": sum(
             1 for value in _numbers(candidates, schema.CP_SUBNETWORK_COUNT)
@@ -231,6 +373,7 @@ def collect(layers):
 
         # --- thresholds, so the page states the rules it was run under ---
         "max_distance_ft": config.MAX_DISTANCE_FT,
+        "near_search_limit_ft": config.NEAR_SEARCH_LIMIT_FT,
         "lower_max_wc": config.LOWER_PRESSURE_MAX_WC,
         "lower_max_psi": config.LOWER_PRESSURE_MAX_PSI,
         "other_min_psi": config.OTHER_PRESSURE_MIN_PSI,

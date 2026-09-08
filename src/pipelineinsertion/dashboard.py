@@ -100,6 +100,15 @@ def _decimal(value, places=1, suffix=""):
     return "—" if value is None else f"{value:,.{places}f}{suffix}"
 
 
+def _miles(feet):
+    """Feet as miles. "—" when the length could not be measured at all."""
+    return "—" if feet is None else f"{feet / 5280.0:,.1f} mi"
+
+
+def _feet(feet):
+    return "not measurable" if feet is None else f"{feet:,.0f} ft"
+
+
 def _percent(value):
     return "—" if value is None else f"{value * 100:.1f}%"
 
@@ -164,6 +173,50 @@ def _funnel(stages):
     return "".join(parts)
 
 
+def _length_bars(rows, stats):
+    """Candidate lengths by bin, with the mean and median marked.
+
+    Each bin shows its system count as the bar and its footage beside it: "how
+    many systems" and "how much main" are different questions, and the second
+    is the one that sizes the work.
+
+    Mean and median are drawn as labelled rules rather than a second colour.
+    They disagree - system lengths are heavily right-skewed, so a few long runs
+    pull the mean above the median - and that disagreement is worth seeing,
+    which a single "average" would hide.
+    """
+    if not rows or all(count == 0 for _, count, _ in rows):
+        return '<p class="empty">No candidate has a measured length.</p>'
+
+    largest = max(count for _, count, _ in rows) or 1
+    parts = ['<div class="bars">']
+    for label, count, footage in rows:
+        width = 100.0 * count / largest
+        parts.append(
+            '<div class="bar-row wide">'
+            f'<div class="bar-label">{escape(label)}</div>'
+            '<div class="bar-track">'
+            f'<div class="bar-fill" style="width:{width:.2f}%"></div>'
+            '</div>'
+            f'<div class="bar-value">{_count(count)}</div>'
+            f'<div class="bar-value muted">{_decimal(footage, 0, " ft")}</div>'
+            '</div>')
+    parts.append("</div>")
+
+    marks = []
+    if stats.get("median") is not None:
+        marks.append(f"median {stats['median']:,.0f} ft")
+    if stats.get("mean") is not None:
+        marks.append(f"mean {stats['mean']:,.0f} ft")
+    if stats.get("min") is not None and stats.get("max") is not None:
+        marks.append(f"range {stats['min']:,.0f}–{stats['max']:,.0f} ft")
+    if marks:
+        parts.append('<div class="stat-rules">'
+                     + "".join(f"<span>{escape(mark)}</span>" for mark in marks)
+                     + "</div>")
+    return "".join(parts)
+
+
 def _histogram(rows, threshold_ft):
     """Distance bins, with the threshold drawn where it actually falls.
 
@@ -195,6 +248,67 @@ def _histogram(rows, threshold_ft):
     return "".join(parts)
 
 
+def _distance_scan(rows, threshold_ft, search_limit_ft):
+    """A what-if control over the distance threshold, and its readouts.
+
+    The one interactive thing on the page. Everything else reports the run as
+    it was configured; this section, and only this section, answers "what if
+    the threshold moved" - so the control sits at its top and scopes what is
+    below it, rather than silently changing numbers elsewhere.
+
+    The rows are embedded rather than recomputed on a server, because the page
+    has to keep working as a file: emailed, opened from a share, or read on a
+    machine that has never run the workflow.
+
+    Pressure is deliberately not relaxable. Distance is a threshold someone can
+    argue about; a target below the candidate's own pressure does not become
+    usable by moving a number, so the readout separates the two.
+    """
+    if not rows:
+        return ('<p class="empty">No system had a nearest target, so there is '
+                'nothing to scan.</p>')
+
+    import json
+
+    top = min(float(search_limit_ft), max(row[0] for row in rows))
+    top = max(top, float(threshold_ft))
+    return (
+        '<div class="scan">'
+        '<div class="controls">'
+        '<label for="scanRange">Distance to nearest target</label>'
+        f'<input id="scanRange" type="range" min="0" max="{top:.0f}" step="1" '
+        f'value="{threshold_ft:g}" aria-describedby="scanReadout"/>'
+        f'<input id="scanValue" type="number" min="0" max="{top:.0f}" step="1" '
+        f'value="{threshold_ft:g}" aria-label="Distance in feet"/>'
+        '<span class="unit">ft</span>'
+        '<button id="scanReset" type="button">Reset to '
+        f'{threshold_ft:g} ft</button>'
+        '</div>'
+        '<div class="scan-tiles" id="scanReadout">'
+        '<div class="tile"><div class="value" id="scanCount">—</div>'
+        '<div class="label">Insertable systems</div>'
+        '<div class="foot">within the distance and at or below target pressure</div>'
+        '</div>'
+        '<div class="tile"><div class="value" id="scanFootage">—</div>'
+        '<div class="label">Insertable main</div>'
+        '<div class="foot" id="scanFootageFt">—</div></div>'
+        '<div class="tile"><div class="value" id="scanReach">—</div>'
+        '<div class="label">Within the distance</div>'
+        '<div class="foot">ignoring pressure — not all of it is insertable</div>'
+        '</div>'
+        '<div class="tile"><div class="value" id="scanDelta">—</div>'
+        f'<div class="label">Against {threshold_ft:g} ft</div>'
+        '<div class="foot" id="scanDeltaFt">—</div></div>'
+        '</div>'
+        '<table class="scan-table"><caption>At a few round distances</caption>'
+        '<thead><tr><th>Distance</th><th>Systems</th><th>Insertable main</th>'
+        '<th>vs configured</th></tr></thead>'
+        '<tbody id="scanSteps"></tbody></table>'
+        '</div>'
+        f'<script id="scanData" type="application/json">{json.dumps(rows)}</script>'
+    )
+
+
 def _table(headers, rows, caption):
     if not rows:
         return '<p class="empty">No candidates to list.</p>'
@@ -219,6 +333,98 @@ def _table(headers, rows, caption):
 
 # --- The page ----------------------------------------------------------------
 
+
+# The page's only script. Inline and self-contained - no fetch, no library, no
+# network - so the file still behaves when it is emailed or opened from a share.
+# Every number it shows is also in the GeoPackage; this only re-totals rows that
+# are already on the page.
+SCAN_SCRIPT = """
+(function () {
+  var node = document.getElementById('scanData');
+  if (!node) return;
+  var rows;
+  try { rows = JSON.parse(node.textContent); } catch (e) { return; }
+  if (!rows || !rows.length) return;
+
+  var range = document.getElementById('scanRange');
+  var value = document.getElementById('scanValue');
+  var reset = document.getElementById('scanReset');
+  var configured = parseFloat(range.getAttribute('value')) || 0;
+
+  function fmt(n, digits) {
+    return n.toLocaleString(undefined, {
+      minimumFractionDigits: digits || 0, maximumFractionDigits: digits || 0 });
+  }
+
+  // rows are [distance_ft, length_ft, pressure_ok]
+  function totals(limit) {
+    var count = 0, footage = 0, reach = 0, reachFt = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i][0] > limit) continue;
+      reach += 1; reachFt += rows[i][1];
+      if (rows[i][2]) { count += 1; footage += rows[i][1]; }
+    }
+    return { count: count, footage: footage, reach: reach, reachFt: reachFt };
+  }
+
+  var baseline = totals(configured);
+
+  function setText(id, text) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = text;   // textContent, never innerHTML
+  }
+
+  function render(limit) {
+    var t = totals(limit);
+    setText('scanCount', fmt(t.count));
+    setText('scanFootage', fmt(t.footage / 5280, 2) + ' mi');
+    setText('scanFootageFt', fmt(t.footage) + ' ft of main');
+    setText('scanReach', fmt(t.reach) + ' systems');
+    var delta = t.footage - baseline.footage;
+    var sign = delta > 0 ? '+' : (delta < 0 ? '\u2212' : '');
+    setText('scanDelta', sign + fmt(Math.abs(delta) / 5280, 2) + ' mi');
+    setText('scanDeltaFt', sign + fmt(Math.abs(delta)) + ' ft against the '
+      + fmt(configured) + ' ft the run used');
+
+    var body = document.getElementById('scanSteps');
+    if (!body) return;
+    body.textContent = '';
+    var steps = [10, 25, 50, 75, 100, 150, 250];
+    if (steps.indexOf(limit) === -1) steps.push(limit);
+    steps.sort(function (a, b) { return a - b; });
+    for (var i = 0; i < steps.length; i++) {
+      var s = totals(steps[i]);
+      var d = s.footage - baseline.footage;
+      var tr = document.createElement('tr');
+      if (steps[i] === limit) tr.className = 'current';
+      [fmt(steps[i]) + ' ft', fmt(s.count),
+       fmt(s.footage) + ' ft',
+       (d > 0 ? '+' : (d < 0 ? '\u2212' : '')) + fmt(Math.abs(d)) + ' ft'
+      ].forEach(function (text) {
+        var td = document.createElement('td');
+        td.textContent = text;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    }
+  }
+
+  function apply(raw) {
+    var limit = parseFloat(raw);
+    if (!isFinite(limit) || limit < 0) limit = 0;
+    var max = parseFloat(range.max);
+    if (limit > max) limit = max;
+    range.value = limit;
+    value.value = limit;
+    render(limit);
+  }
+
+  range.addEventListener('input', function () { apply(range.value); });
+  value.addEventListener('input', function () { apply(value.value); });
+  if (reset) reset.addEventListener('click', function () { apply(configured); });
+  apply(configured);
+})();
+"""
 
 STYLE = """
 :root{
@@ -272,7 +478,7 @@ section{background:var(--surface);border:1px solid var(--border);
 @media(min-width:860px){.grid-2{grid-template-columns:1fr 1fr}}
 .tiles{display:grid;gap:12px;grid-template-columns:repeat(2,1fr);margin-top:18px}
 @media(min-width:700px){.tiles{grid-template-columns:repeat(3,1fr)}}
-@media(min-width:1000px){.tiles{grid-template-columns:repeat(6,1fr)}}
+@media(min-width:1000px){.tiles{grid-template-columns:repeat(auto-fit,minmax(148px,1fr))}}
 .tile{background:var(--surface);border:1px solid var(--border);
   border-radius:10px;padding:14px 16px}
 .tile .value{font-size:26px;font-weight:650;letter-spacing:-0.01em;
@@ -320,7 +526,40 @@ td.wrap{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   color:var(--ink-2);font-size:12px;background:var(--page);border-radius:0 6px 6px 0}
 .empty{color:var(--muted);font-size:12px;margin:4px 0}
 footer{color:var(--muted);font-size:11px;margin-top:26px}
+.bar-row.wide{grid-template-columns:minmax(110px,26%) 1fr 52px 92px}
+.bar-value.muted{color:var(--muted)}
+.stat-rules{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;
+  padding-top:10px;border-top:1px solid var(--grid);color:var(--ink-2);
+  font-size:12px;font-variant-numeric:tabular-nums}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--grid)}
+.controls label{color:var(--ink-2);font-size:12px}
+.controls input[type=range]{flex:1 1 260px;min-width:180px;accent-color:var(--series-1)}
+.controls input[type=number]{width:88px;padding:5px 8px;font:inherit;
+  font-variant-numeric:tabular-nums;color:var(--ink);background:var(--surface);
+  border:1px solid var(--axis);border-radius:6px}
+.controls .unit{color:var(--muted);font-size:12px;margin-left:-4px}
+.controls button{padding:5px 11px;font:inherit;font-size:12px;color:var(--ink-2);
+  background:var(--surface);border:1px solid var(--axis);border-radius:6px;
+  cursor:pointer}
+.controls button:hover{color:var(--ink);border-color:var(--ink-2)}
+.scan-tiles{display:grid;gap:12px;grid-template-columns:repeat(2,1fr)}
+@media(min-width:820px){.scan-tiles{grid-template-columns:repeat(4,1fr)}}
+.scan-tiles .tile{background:var(--page)}
+.scan-tiles .value{color:var(--series-1)}
+.scan-table{margin-top:16px}
+.scan-table tr.current td{font-weight:650;color:var(--ink)}
+.scan-table tr.current td:first-child{box-shadow:inset 3px 0 0 var(--series-1)}
 """
+
+
+def _share_note(metrics):
+    """" — N% of it", when both lengths are measurable. "" otherwise."""
+    total = metrics["gsep_length"].get("lower_pressure")
+    candidate = metrics["length_stats"]["total"]
+    if not total or candidate is None:
+        return ""
+    return f" — {100.0 * candidate / total:.1f}% of it"
 
 
 def _table_caption(rows, total):
@@ -346,6 +585,9 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
         ("", _decimal(metrics["candidate_length_miles"], 1, " mi"),
          "Candidate main length",
          f"{_decimal(metrics['candidate_length_ft'], 0, ' ft')}"),
+        ("", _miles(metrics["gsep_length"].get("lower_pressure")),
+         "GSEP LPP main length",
+         _feet(metrics["gsep_length"].get("lower_pressure"))),
         ("", _count(metrics["candidate_mains"]), "Source mains",
          "dissolved into the candidates"),
         ("", _decimal(metrics["median_distance_ft"], 1, " ft"),
@@ -443,6 +685,29 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
 </div>
 
 <section>
+  <h2>How long are the insertable candidates?</h2>
+  <p class="panel-note">System count per bin, with the footage each bin holds.
+    Mean and median are both given because they disagree: lengths are heavily
+    right-skewed, so a few long runs pull the mean above the median and a
+    single "average" would misdescribe most of the list.</p>
+  {_length_bars(metrics["length_histogram"], metrics["length_stats"])}
+  <p class="panel-note" style="margin-top:14px">
+    {_feet(metrics["length_stats"]["total"])} of insertable main in
+    {_count(metrics["length_stats"]["count"])} systems, out of
+    {_feet(metrics["gsep_length"].get("lower_pressure"))} of GSEP-eligible
+    Lower Pressure main{_share_note(metrics)}.</p>
+</section>
+
+<section>
+  <h2>What if the distance threshold moved?</h2>
+  <p class="panel-note">The only control on this page. It scopes this section
+    only — everything above reports the run as it was configured, at
+    {metrics['max_distance_ft']:g} ft.</p>
+  {_distance_scan(metrics["distance_scan"], metrics["max_distance_ft"],
+                  metrics["near_search_limit_ft"])}
+</section>
+
+<section>
   <h2>Cathodic protection</h2>
   <p class="panel-note">A candidate spanning more than one CP subnetwork is a
     constructability question before it is a scheduling one.</p>
@@ -465,7 +730,9 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
   <code>pipelineinsertion/config.py</code> and overridable by environment
   variable.</footer>
 
-</div></body></html>
+</div>
+<script>{SCAN_SCRIPT}</script>
+</body></html>
 """
 
 

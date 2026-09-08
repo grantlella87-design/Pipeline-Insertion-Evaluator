@@ -307,9 +307,38 @@ class TestRender:
 
         A dashboard that fetched a charting library from a CDN would be the one
         deliverable that stopped working on a machine with no internet.
+
+        The check is on external references, not on the presence of a script.
+        This test used to ban `<script` outright, which was the right rule for
+        the wrong reason: an inline script is as offline as the rest of the
+        file, and the what-if control needs one. What must never appear is a
+        URL, a src attribute, or a fetch.
         """
-        for marker in ("http://", "https://", "<script"):
+        for marker in ("http://", "https://", "//cdn", "src=", "fetch(",
+                       "XMLHttpRequest", "import("):
             assert marker not in page, f"{marker!r} in a page that must be offline"
+
+    def test_its_only_script_is_inline_and_self_contained(self, page):
+        import re
+
+        tags = re.findall(r"<script\b[^>]*>", page)
+        # One for the embedded scan rows, one for the behaviour.
+        assert tags, "the what-if control needs a script"
+        for tag in tags:
+            assert "src=" not in tag, f"{tag} loads from somewhere else"
+
+    def test_untrusted_labels_never_reach_innerhtml(self, page):
+        """System ids and materials come from the service, not from here.
+
+        The script writes them with textContent; innerHTML would make a
+        material name into markup.
+        """
+        import re
+
+        # The assignment is what is dangerous, not the word - the script's own
+        # comment says "textContent, never innerHTML".
+        assert not re.search(r"innerHTML\s*=", page), "the script assigns innerHTML"
+        assert "textContent" in page
 
     def test_the_headline_numbers_are_on_the_page(self, page):
         assert "Insertion candidates" in page
@@ -382,3 +411,210 @@ class TestBuild:
         target = dashboard.build()
         assert target.is_file()
         assert "<!doctype html>" in target.read_text(encoding="utf-8")
+
+
+class TestLengthStats:
+    def test_mean_and_median_are_both_reported(self):
+        """They disagree on this data, and the disagreement is the point.
+
+        System lengths are heavily right-skewed - a few long runs pull the mean
+        well above the median - so a single "average length" would misdescribe
+        most of the list.
+        """
+        frame = frame_with({schema.LENGTH_FT: [10, 20, 30, 40, 5000]})
+        stats = dashboard_metrics.length_stats(frame)
+        assert stats["median"] == 30
+        assert stats["mean"] == pytest.approx(1020.0)
+        assert stats["mean"] > stats["median"]
+
+    def test_total_and_range(self):
+        frame = frame_with({schema.LENGTH_FT: [100, 250, 400]})
+        stats = dashboard_metrics.length_stats(frame)
+        assert stats["total"] == 750
+        assert (stats["min"], stats["max"]) == (100, 400)
+        assert stats["count"] == 3
+
+    def test_no_lengths_gives_none_rather_than_zero(self):
+        # Zero would read as "every candidate is zero feet long".
+        stats = dashboard_metrics.length_stats(frame_with({schema.LENGTH_FT: []}))
+        assert stats["mean"] is None and stats["median"] is None
+        assert stats["total"] == 0
+
+    def test_a_missing_column_does_not_raise(self):
+        stats = dashboard_metrics.length_stats(frame_with({"other": [1]}))
+        assert stats["count"] == 0
+
+
+class TestLengthHistogram:
+    def test_each_bin_carries_its_count_and_its_footage(self):
+        # "How many systems" and "how much main" are different questions.
+        frame = frame_with({schema.LENGTH_FT: [50, 60, 300]})
+        rows = {label: (count, total) for label, count, total in
+                dashboard_metrics.length_histogram(frame)}
+        assert rows["0–100 ft"] == (2, 110)
+        assert rows["250–500 ft"] == (1, 300)
+
+    def test_the_bin_edge_belongs_to_the_upper_bin(self):
+        frame = frame_with({schema.LENGTH_FT: [100]})
+        rows = {label: count for label, count, _ in
+                dashboard_metrics.length_histogram(frame)}
+        assert rows["0–100 ft"] == 0
+        assert rows["100–250 ft"] == 1
+
+    def test_the_last_bin_is_open_ended(self):
+        frame = frame_with({schema.LENGTH_FT: [99000]})
+        rows = {label: count for label, count, _ in
+                dashboard_metrics.length_histogram(frame)}
+        assert rows["10,000+ ft"] == 1
+
+    def test_every_length_lands_in_exactly_one_bin(self):
+        lengths = [0, 1, 99, 100, 249, 250, 4999, 5000, 20000]
+        frame = frame_with({schema.LENGTH_FT: lengths})
+        rows = dashboard_metrics.length_histogram(frame)
+        assert sum(count for _, count, _ in rows) == len(lengths)
+        assert sum(total for _, _, total in rows) == pytest.approx(sum(lengths))
+
+
+class TestGsepLength:
+    def test_it_totals_the_gsep_eligible_main(self):
+        analysis = build_analysis()
+        # Add the mains layers, which is where the length lives.
+        import geopandas as gpd
+
+        layers = dict(analysis)
+        lower = gpd.GeoDataFrame(
+            {schema.GSEP_ELIGIBLE: [1, 1]},
+            geometry=[LineString([(0, 0), (100, 0)]),
+                      LineString([(0, 10), (200, 10)])], crs="EPSG:2249")
+        layers[schema.GSEP_LOWER_PRESSURE_LAYER] = lower
+        lengths = dashboard_metrics.gsep_length(layers)
+        assert lengths["lower_pressure"] == pytest.approx(300.0)
+
+    def test_only_eligible_other_pressure_main_counts(self):
+        """The Other Pressure layer is not GSEP-filtered - it holds targets.
+
+        Counting all of it as GSEP length would inflate the total by the whole
+        elevated network.
+        """
+        import geopandas as gpd
+
+        other = gpd.GeoDataFrame(
+            {schema.GSEP_ELIGIBLE: [1, 0]},
+            geometry=[LineString([(0, 0), (100, 0)]),
+                      LineString([(0, 10), (900, 10)])], crs="EPSG:2249")
+        lengths = dashboard_metrics.gsep_length(
+            {schema.OTHER_PRESSURE_MAINS_LAYER: other})
+        assert lengths["other_pressure"] == pytest.approx(100.0)
+
+    def test_a_non_foot_crs_gives_none_rather_than_a_wrong_number(self):
+        """A total in degrees presented as feet is worse than no total.
+
+        Nothing about the number itself would show it was wrong.
+        """
+        import geopandas as gpd
+
+        frame = gpd.GeoDataFrame(
+            {"a": [1]}, geometry=[LineString([(-71.1, 42.3), (-71.0, 42.4)])],
+            crs="EPSG:4326")
+        assert dashboard_metrics.geometry_length_ft(frame) is None
+
+    def test_an_empty_frame_is_zero_not_none(self):
+        # Nothing to measure is a real zero; unmeasurable is None.
+        assert dashboard_metrics.geometry_length_ft(None) == 0.0
+
+
+class TestDistanceScan:
+    def test_it_includes_systems_beyond_the_current_threshold(self):
+        """The whole point of the control.
+
+        A scan holding only today's candidates could never answer "what if the
+        threshold moved", so it carries every system that has a distance -
+        including the one at 870 ft that the configured 50 ft excludes.
+        """
+        analysis = build_analysis()
+        rows = dashboard_metrics.distance_scan_rows(
+            analysis[schema.NEAR_AUDIT_TABLE])
+
+        assert all(isinstance(d, float) and isinstance(ok, bool)
+                   for d, _, ok in rows)
+        distances = sorted(d for d, _, _ in rows)
+        assert len(rows) == 2
+        assert distances[0] <= config.MAX_DISTANCE_FT   # today's candidate
+        assert distances[1] > config.MAX_DISTANCE_FT    # only reachable if relaxed
+
+    def test_pressure_is_carried_separately_from_distance(self):
+        """Distance is relaxable; pressure is not.
+
+        A target below the candidate's own pressure does not become usable by
+        moving a threshold, so the scan must not let a bigger distance turn it
+        into a candidate.
+        """
+        import geopandas as gpd
+        import pandas as pd
+
+        frame = gpd.GeoDataFrame(pd.DataFrame({
+            schema.DISTANCE_FT: [10.0, 20.0],
+            schema.LENGTH_FT: [100.0, 200.0],
+            schema.SYSTEM_PRESSURE_PSI: [2.0, 5.0],
+            schema.NEAREST_EP_PRESSURE_PSI: [20.0, 1.0],   # second is too low
+        }), geometry=[LineString([(0, 0), (1, 1)])] * 2, crs="EPSG:2249")
+
+        rows = dashboard_metrics.distance_scan_rows(frame)
+        assert [ok for _, _, ok in rows] == [True, False]
+
+    def test_a_system_with_no_distance_is_left_out(self):
+        import geopandas as gpd
+        import pandas as pd
+
+        frame = gpd.GeoDataFrame(pd.DataFrame({
+            schema.DISTANCE_FT: [10.0, None],
+            schema.LENGTH_FT: [100.0, 200.0],
+            schema.SYSTEM_PRESSURE_PSI: [2.0, 2.0],
+            schema.NEAREST_EP_PRESSURE_PSI: [20.0, 20.0],
+        }), geometry=[LineString([(0, 0), (1, 1)])] * 2, crs="EPSG:2249")
+        assert len(dashboard_metrics.distance_scan_rows(frame)) == 1
+
+    def test_no_near_table_is_empty_not_an_error(self):
+        assert dashboard_metrics.distance_scan_rows(None) == []
+
+
+@pytest.fixture(scope="module")
+def page_with_scan():
+    import geopandas as gpd
+
+    analysis = build_analysis()
+    layers = dict(analysis)
+    layers[schema.GSEP_LOWER_PRESSURE_LAYER] = gpd.GeoDataFrame(
+        {schema.GSEP_ELIGIBLE: [1]},
+        geometry=[LineString([(0, 0), (500, 0)])], crs="EPSG:2249")
+    metrics = dashboard_metrics.collect(layers)
+    headers, rows = dashboard_metrics.candidate_table(
+        layers[schema.CANDIDATES_LAYER])
+    return dashboard.render(metrics, headers, rows, total_candidates=1)
+
+
+class TestTheNewPanelsRender:
+    def test_the_length_panel_reports_mean_and_median(self, page_with_scan):
+        assert "How long are the insertable candidates?" in page_with_scan
+        assert "median" in page_with_scan and "mean" in page_with_scan
+
+    def test_the_gsep_length_tile_is_present(self, page_with_scan):
+        assert "GSEP LPP main length" in page_with_scan
+
+    def test_the_scan_embeds_its_rows(self, page_with_scan):
+        assert 'id="scanData"' in page_with_scan
+        assert "What if the distance threshold moved?" in page_with_scan
+
+    def test_the_scan_says_it_scopes_only_its_own_section(self, page_with_scan):
+        # Everything above reports the configured run; a control that silently
+        # moved those numbers would make the page disagree with the GeoPackage.
+        import re
+
+        # The copy wraps in the source, so compare on collapsed whitespace.
+        assert "scopes this section only" in re.sub(r"\s+", " ", page_with_scan)
+
+    def test_an_empty_run_renders_the_new_panels_without_a_scan(self):
+        metrics = dashboard_metrics.collect({})
+        page = dashboard.render(metrics, ["System"], [])
+        assert "nothing to scan" in page
+        assert "<!doctype html>" in page
