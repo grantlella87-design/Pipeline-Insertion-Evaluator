@@ -37,6 +37,12 @@ NEAR_AUDIT_TABLE = "LPP_GSEP_NearAudit"
 
 GSEP_ELIGIBLE = "GSEP_ELIGIBLE"
 GSEP_REASON = "GSEP_REASON"
+
+# Whether the main is physically big enough to insert into, and why not when it
+# is not. Separate from GSEP eligibility on purpose: a main can be well worth
+# replacing and still be too small to replace by insertion.
+INSERTABLE = "INSERTABLE"
+INSERTION_REASON = "INSERTION_REASON"
 MATERIAL = "MATERIAL"
 
 # The source attributes an engineer reviewing a candidate asks for, carried

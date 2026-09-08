@@ -7,6 +7,8 @@ Identify GSEP-eligible Low Pressure Pipe (LPP) systems that are candidates for i
 A candidate must satisfy all of the following:
 
 - Be GSEP eligible.
+- Be big enough to insert into: nominal diameter greater than 4 inches, or
+  exactly 4 inches where the main runs above 2 PSI.
 - Be part of a Lower Pressure distribution system.
 - Be located within 50 feet of an Other Pressure system.
 - The Other Pressure system pressure must be greater than or equal to the candidate system pressure.
@@ -121,11 +123,27 @@ Plastic eligibility should be finalized after confirmation of the applicable pla
 ```sql
 GSEP_ELIGIBLE = 1
 AND (
+    nominaldiameter > 4
+    OR (
+        nominaldiameter = 4
+        AND (
+            (pressureunits = 1 AND OPERATINGPRESSURE > 2)
+            OR
+            (pressureunits = 2 AND OPERATINGPRESSURE > 55.4152)
+        )
+    )
+)
+AND (
     (pressureunits = 2 AND OPERATINGPRESSURE <= 60)
     OR
     (pressureunits = 1 AND OPERATINGPRESSURE <= 2)
 )
 ```
+
+55.4152" WC is 2 PSI converted at 27.7076" WC per PSI, so the two unit branches
+express one threshold. The bore test is applied to each main, not to the
+dissolved system, and it is separate from GSEP eligibility. See *Insertability
+is a separate test from GSEP eligibility* below.
 
 ### Pressure Units Domain (7_UPDM_UnitsForPressure)
 
@@ -507,6 +525,7 @@ src/pipelineinsertion/
     fields.py       value cleaning and field-name resolution
     domains.py      coded-value domains read from layer metadata
     gsep.py         GSEP eligibility, as a rule and as SQL
+    insertability.py minimum bore, and the 4" carve-out above 2 PSI
     pressure.py     pressure buckets, units, PSI conversion
     classify.py     raw Main Lines -> the two buckets
     systems.py      dissolve contiguous mains, SOURCE_IDS traceability
@@ -610,8 +629,9 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-512 tests, none of which need a network, an ArcGIS token or a GIS install. They
-cover the eligibility rule, the pressure buckets and unit conversion, the
+586 tests, none of which need a network, an ArcGIS token or a GIS install. They
+cover the eligibility rule, the minimum insertable bore and its pressure
+carve-out, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
 including the GeoPackage write and reading it back through the map. The
@@ -619,9 +639,10 @@ bootstrap is covered too, without creating a venv or running pip: which
 interpreter is running, what is missing, that a re-exec cannot loop, and that
 the Zscaler proxy is used when it answers and not when it does not.
 
-`gsep.where_clause()` and `pressure.lower_pressure_where()` generate the SQL in
-the specification above from the same `config` values the local rules use, and
-the tests check the two agree. The download stage is the one part not exercised,
+`gsep.where_clause()`, `insertability.where_clause()` and
+`pressure.lower_pressure_where()` generate the SQL in the specification above
+from the same `config` values the local rules use, and the tests check the two
+agree. The download stage is the one part not exercised,
 because it is the one part that needs a service.
 
 ---
@@ -664,6 +685,70 @@ each group are found and dissolved one at a time. Two mains count as connected
 when they come within `CONNECT_TOLERANCE_FT` (0.1 ft) of each other; exact
 coordinate equality split systems that were digitised a hundredth of a foot
 apart.
+
+## Insertability is a separate test from GSEP eligibility
+
+Insertion threads a new plastic carrier pipe inside the existing main, so below
+a certain bore there is no room for one. `config.MIN_INSERTION_DIAMETER_IN` is
+4 inches and the test is "greater than", so a 4 inch main is out - except above
+the pressure below. Override it with `PIPEINSERT_MIN_INSERTION_DIAMETER`.
+
+### 4 inch is acceptable above 2 PSI
+
+A main at exactly the minimum is insertable when it runs above
+`config.INSERTION_ELEVATED_PRESSURE_PSI` (2 PSI, overridable with
+`PIPEINSERT_INSERTION_ELEVATED_PSI`). Pressure buys back the capacity the
+narrower carrier pipe gives up, so the same load can be served through a smaller
+bore. The carve-out is for the minimum itself only: a 3 inch main stays out at
+any pressure.
+
+The pressure tested is **the main's own**, in PSI - what it runs at today, not
+what it would run at once tied into an elevated system. Every candidate ends up
+above 2 PSI after insertion, so testing the post-insertion pressure would admit
+every 4 inch main and the rule would do no work. It is the same pressure figure
+the bucket classification was made on, so a main whose `OPERATINGPRESSURE` was
+null and fell back to `MAOPRECORD` is judged on that rather than on nothing.
+
+Inside bucket 1 this is a narrow band. Lower Pressure runs to 60" WC, which is
+2.17 PSI, so it is the water-column mains above 55.4" WC that qualify - and
+`INSERTION_REASON` records `insertable_at_elevated_pressure` on each one, so the
+size of the band is a number in the output rather than an assumption.
+
+2 PSI is also where the Lower Pressure bucket ends, but it is its own config
+value rather than a reference to `LOWER_PRESSURE_MAX_PSI`. They are different
+rules that happen to share a number, and widening a pressure bucket should not
+silently change which mains can be inserted into.
+
+It is `insertability.py` rather than another clause in `gsep.py`, and it sets
+its own `INSERTABLE` and `INSERTION_REASON` columns rather than being folded
+into `GSEP_ELIGIBLE`, because the two answer different questions:
+
+| | |
+|---|---|
+| GSEP eligible | is this main leak-prone enough to be worth replacing? |
+| insertable | can the replacement be done by insertion at all? |
+
+A 4 inch low-pressure cast iron main is still GSEP eligible and still gets
+replaced - just not by insertion. Folding the bore test into the GSEP flag
+would make the
+eligibility counts across every output layer mean something other than the GSEP
+logic above says they mean.
+
+A main with no `nominaldiameter` is not insertable, and its `INSERTION_REASON`
+records that the value was missing, for the same reason cast iron with no
+diameter is not eligible. A main at exactly the minimum with no readable
+pressure is excluded on the same grounds, and its reason names the pressure
+rather than the diameter as what was missing: the two are different data gaps
+and a merged count would hide which one to go and fix.
+
+### Applied per main, not per system
+
+Bucket 1 drops mains that fail the bore test before the dissolve, so a system of
+8 inch mains with one low-pressure 4 inch segment in the middle splits into the
+two 8 inch runs either side. That is what the pipe physically does: it cannot be threaded *through* the small
+segment, but each run beyond it can still be inserted. Excluding the whole
+system would discard insertable main; keeping it whole would claim a run that
+cannot be threaded end to end.
 
 ## Other Pressure systems are not filtered on GSEP eligibility
 

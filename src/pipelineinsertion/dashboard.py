@@ -610,8 +610,22 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
         f"{metrics['other_max_psi']:g} PSI",
         f"Cast iron ≤ {metrics['cast_iron_max_diameter']:g}\"",
         f"Coated steel before {metrics['coated_steel_cutoff']}",
+        # Last, and not between the two GSEP material rules: these are not GSEP
+        # rules. They are about whether the bore can take a carrier pipe.
+        f"Insertable bore > {metrics['min_insertion_diameter_in']:g}\"",
+        f"{metrics['min_insertion_diameter_in']:g}\" allowed above "
+        f"{metrics['insertion_elevated_psi']:g} PSI",
     ]
     rule_html = "".join(f"<li>{escape(rule)}</li>" for rule in rules)
+
+    at_minimum_note = ""
+    if metrics["at_minimum_mains"]:
+        at_minimum_note = (
+            f'<p class="panel-note">'
+            f'{metrics["at_minimum_mains"]:,} of those mains are at exactly '
+            f'{metrics["min_insertion_diameter_in"]:g}", admitted because they '
+            f'run above {metrics["insertion_elevated_psi"]:g} PSI. Anything '
+            f'narrower is excluded at any pressure.</p>')
 
     plastic_note = ""
     if metrics["plastic_pending"]:
@@ -653,6 +667,7 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
     a different population from the candidate counts, so these are not nested
     percentages of one another.</p>
   {_funnel(metrics["funnel"])}
+  {at_minimum_note}
 </section>
 
 <div class="grid grid-2">

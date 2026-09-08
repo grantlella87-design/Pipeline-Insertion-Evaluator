@@ -17,7 +17,16 @@ import sys
 
 from _bootstrap import config
 
-from pipelineinsertion import classify, crs, gsep, nearest, pressure, schema, systems
+from pipelineinsertion import (
+    classify,
+    crs,
+    gsep,
+    insertability,
+    nearest,
+    pressure,
+    schema,
+    systems,
+)
 from pipelineinsertion.arcgis import (
     layer_cache_paths,
     metadata_field_names,
@@ -145,6 +154,18 @@ def report_funnel(mains, show_where):
         verdict = "eligible" if reason in gsep.ELIGIBLE_REASONS else "excluded"
         log(f"    {count:>9,}  {verdict:9} {reason}")
 
+    log(f"\n  Insertability (bore over {config.MIN_INSERTION_DIAMETER_IN:g}\", or "
+        f"at {config.MIN_INSERTION_DIAMETER_IN:g}\" above "
+        f"{config.INSERTION_ELEVATED_PRESSURE_PSI:g} PSI), which is a separate "
+        f"test from GSEP eligibility:")
+    for reason, count in classified[schema.INSERTION_REASON].value_counts().items():
+        admitted = reason in (insertability.REASON_INSERTABLE,
+                              insertability.REASON_INSERTABLE_AT_ELEVATED)
+        verdict = "insertable" if admitted else "excluded"
+        # The plain "insertable" reason would only repeat the verdict.
+        detail = "" if reason == insertability.REASON_INSERTABLE else reason
+        log(f"    {count:>9,}  {verdict:10}  {detail}".rstrip())
+
     log("\n  Pressure buckets (all mains, before GSEP):")
     for bucket, count in classified[schema.PRESSURE_BUCKET].value_counts().items():
         log(f"    {count:>9,}  {bucket or '(neither bucket)'}")
@@ -157,12 +178,22 @@ def report_funnel(mains, show_where):
     lower_mains = classify.lower_pressure_candidates(classified)
     other_mains = classify.other_pressure_targets(classified)
 
-    log(f"\n  {len(lower_mains):>9,}  bucket 1 mains (GSEP eligible AND Lower Pressure)")
+    log(f"\n  {len(lower_mains):>9,}  bucket 1 mains (GSEP eligible AND Lower "
+        f"Pressure AND insertable)")
+    dropped = classified[
+        (classified[schema.GSEP_ELIGIBLE] == 1)
+        & (classified[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER)
+        & (classified[schema.INSERTABLE] != 1)
+    ]
+    if len(dropped):
+        log(f"  {len(dropped):>9,}  more passed both of those tests and were held "
+            f"out for bore alone")
     log(f"  {len(other_mains):>9,}  bucket 2 mains (Other Pressure, any material)")
 
     if not len(lower_mains):
         log("\n  Nothing reaches bucket 1, so there can be no candidates. The "
-            "eligibility and bucket tables above say which test excluded them.")
+            "eligibility, insertability and bucket tables above say which test "
+            "excluded them.")
         return
     if not len(other_mains):
         log("\n  There are no Other Pressure systems to insert into, so no "
@@ -202,6 +233,10 @@ def report_funnel(mains, show_where):
         log("GSEP eligibility:\n" + gsep.where_clause())
         log("\nLower Pressure:\n" + pressure.lower_pressure_where())
         log("\nOther Pressure:\n" + pressure.other_pressure_where())
+        log("\nInsertable bore:\n" + insertability.where_clause(
+            resolved.get("diameter") or "nominaldiameter",
+            resolved.get("pressure") or "OPERATINGPRESSURE",
+            resolved.get("pressure_units") or "pressureunits"))
 
 
 def main(argv=None):

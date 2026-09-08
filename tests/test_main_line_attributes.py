@@ -206,7 +206,7 @@ class TestMainsCarryDecodedAttributes:
         return classify.classify(
             make_mains([
                 (2, config.ASSETTYPE_CAST_IRON, 8, INSTALLED_1960, "CP-A", 0),
-                (1, config.ASSETTYPE_COPPER, 4, INSTALLED_1960, "CP-B", 100),
+                (1, config.ASSETTYPE_COPPER, 6, INSTALLED_1960, "CP-B", 100),
                 (2, 9, 6, INSTALLED_1990, "CP-A", 200),
             ]),
             RESOLVED, layer_json=layer_json)
@@ -230,7 +230,7 @@ class TestMainsCarryDecodedAttributes:
         assert list(classified[schema.ASSETGROUP]) == [2, 1, 2]
 
     def test_diameter_and_cp_subnetwork_are_carried(self, classified):
-        assert list(classified[schema.NOMINAL_DIAMETER]) == [8, 4, 6]
+        assert list(classified[schema.NOMINAL_DIAMETER]) == [8, 6, 6]
         assert list(classified[schema.CP_SUBNETWORK]) == ["CP-A", "CP-B", "CP-A"]
 
     def test_the_installation_date_is_readable_as_well_as_raw(self, classified):
@@ -278,7 +278,7 @@ class TestSystemsSummariseTheirMains:
             make_mains([
                 (2, config.ASSETTYPE_CAST_IRON, 8, INSTALLED_1960, "CP-A", 0),
                 (2, config.ASSETTYPE_CAST_IRON, 12, INSTALLED_1990, "CP-A", 100),
-                (1, config.ASSETTYPE_COPPER, 4, INSTALLED_1960, "CP-B", 200),
+                (1, config.ASSETTYPE_COPPER, 6, INSTALLED_1960, "CP-B", 200),
             ]),
             RESOLVED, layer_json=layer_json)
         lower = classify.lower_pressure_candidates(classified)
@@ -301,7 +301,7 @@ class TestSystemsSummariseTheirMains:
             "Distribution Pipe;Service Pipe")
 
     def test_the_diameter_range_spans_the_mains(self, dissolved):
-        assert dissolved.iloc[0][schema.MIN_DIAMETER] == 4
+        assert dissolved.iloc[0][schema.MIN_DIAMETER] == 6
         assert dissolved.iloc[0][schema.MAX_DIAMETER] == 12
 
     def test_the_install_dates_span_the_mains(self, dissolved):
@@ -339,7 +339,7 @@ class TestTheAttributesSurviveToTheGeoPackage:
         classified = classify.classify(
             make_mains([
                 (2, config.ASSETTYPE_CAST_IRON, 8, INSTALLED_1960, "CP-A", 0),
-                (1, config.ASSETTYPE_COPPER, 4, INSTALLED_1960, "CP-B", 100),
+                (1, config.ASSETTYPE_COPPER, 6, INSTALLED_1960, "CP-B", 100),
             ]),
             RESOLVED, layer_json=layer_json)
         lower = classify.lower_pressure_candidates(classified)
