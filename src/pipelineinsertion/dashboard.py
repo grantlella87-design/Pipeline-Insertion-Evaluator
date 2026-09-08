@@ -610,6 +610,9 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
         f"{metrics['other_max_psi']:g} PSI",
         f"Cast iron ≤ {metrics['cast_iron_max_diameter']:g}\"",
         f"Coated steel before {metrics['coated_steel_cutoff']}",
+        # Last, and not between the two GSEP material rules: this one is not a
+        # GSEP rule. It is about whether the bore can take a carrier pipe.
+        f"Insertable bore > {metrics['min_insertion_diameter_in']:g}\"",
     ]
     rule_html = "".join(f"<li>{escape(rule)}</li>" for rule in rules)
 

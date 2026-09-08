@@ -131,6 +131,22 @@ CAST_IRON_MAX_DIAMETER_IN = _float_from_env("PIPEINSERT_CAST_IRON_MAX_DIAMETER",
 COATED_STEEL_INSTALLED_BEFORE = os.environ.get(
     "PIPEINSERT_COATED_STEEL_CUTOFF", "1971-08-01")
 
+# --- Insertability -----------------------------------------------------------
+
+# A main this size or smaller cannot be inserted, whatever else is true of it.
+# Insertion threads a new plastic carrier pipe inside the existing main, so
+# below a certain bore there is no room for one.
+#
+# Deliberately separate from GSEP eligibility, which this does not touch. GSEP
+# eligibility is about leak-prone material - which mains are worth replacing.
+# This is about whether the physical operation is possible at all. A 4 inch
+# cast iron main is still GSEP eligible and still gets replaced; it just is not
+# replaced by insertion. Folding the two together would make the GSEP counts in
+# the output mean something other than the README says they mean.
+#
+# The test is "greater than", so 4 inch itself is excluded.
+MIN_INSERTION_DIAMETER_IN = _float_from_env("PIPEINSERT_MIN_INSERTION_DIAMETER", 4.0)
+
 # Plastic is deliberately absent. The README leaves plastic eligibility open
 # until the GSEP program's plastic ASSETTYPE values are confirmed, so no plastic
 # code is claimed here rather than a guess being made that quietly changes the

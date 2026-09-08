@@ -348,7 +348,8 @@ def collect(layers):
 
         # --- the funnel, in the order the workflow applies it ---
         "funnel": [
-            ("GSEP-eligible Lower Pressure mains", _count(lower_mains)),
+            (f"GSEP-eligible Lower Pressure mains over "
+             f"{config.MIN_INSERTION_DIAMETER_IN:g}\"", _count(lower_mains)),
             ("Other Pressure mains (targets)", _count(other_mains)),
             ("Lower Pressure systems", _count(lower_systems)),
             ("Other Pressure systems", _count(other_systems)),
@@ -379,6 +380,7 @@ def collect(layers):
         "other_min_psi": config.OTHER_PRESSURE_MIN_PSI,
         "other_max_psi": config.OTHER_PRESSURE_MAX_PSI,
         "cast_iron_max_diameter": config.CAST_IRON_MAX_DIAMETER_IN,
+        "min_insertion_diameter_in": config.MIN_INSERTION_DIAMETER_IN,
         "coated_steel_cutoff": config.COATED_STEEL_INSTALLED_BEFORE,
         "plastic_pending": not config.PLASTIC_ASSETTYPES,
     }

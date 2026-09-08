@@ -6,4 +6,5 @@ creates no folders and reads no data. Configuration lives in
 pure functions in `pipelineinsertion.gsep` and `pipelineinsertion.pressure`.
 """
 
-__all__ = ["config", "gsep", "pressure", "systems", "nearest", "schema"]
+__all__ = ["config", "gsep", "insertability", "pressure", "systems",
+           "nearest", "schema"]

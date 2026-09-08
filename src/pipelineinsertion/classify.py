@@ -27,7 +27,7 @@ _PACKAGE_PARENT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 if _PACKAGE_PARENT not in _sys.path:
     _sys.path.insert(0, _PACKAGE_PARENT)
 
-from pipelineinsertion import config, domains, gsep, pressure, schema
+from pipelineinsertion import config, domains, gsep, insertability, pressure, schema
 from pipelineinsertion.fields import clean, epoch_ms_to_iso, parse_number, to_epoch_ms
 from pipelineinsertion.output import log, step, warn
 
@@ -83,6 +83,12 @@ def classify(gdf, resolved, domain_labels=None, layer_json=None):
                    for code, size, date in zip(assettype, diameter, installed)]
     frame[schema.GSEP_ELIGIBLE] = [int(bool(eligible)) for eligible, _ in eligibility]
     frame[schema.GSEP_REASON] = [reason for _, reason in eligibility]
+
+    # Separate from eligibility, and not folded into it: a main can be well
+    # worth replacing and still be too small to replace by insertion.
+    insertable = [insertability.insertability(size) for size in diameter]
+    frame[schema.INSERTABLE] = [int(bool(ok)) for ok, _ in insertable]
+    frame[schema.INSERTION_REASON] = [reason for _, reason in insertable]
     frame[schema.MATERIAL] = [
         labels.get(gsep.assettype_code(code)) or gsep.material_label(code)
         for code in assettype
@@ -109,12 +115,31 @@ def classify(gdf, resolved, domain_labels=None, layer_json=None):
 
 
 def lower_pressure_candidates(frame):
-    """Bucket 1: GSEP-eligible mains in the Lower Pressure bucket."""
-    selected = frame[
-        (frame[schema.GSEP_ELIGIBLE] == 1)
-        & (frame[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER)
-    ].copy()
-    log(f"Bucket 1, {config.BUCKET_LOWER}: {len(selected):,} GSEP-eligible mains.")
+    """Bucket 1: GSEP-eligible, insertable mains in the Lower Pressure bucket.
+
+    The size test is applied per main rather than per system, because that is
+    what it physically is. A system of 8 inch mains with one 4 inch segment in
+    the middle cannot be inserted *through* that segment, but the 8 inch runs
+    either side still can - so dropping the small main and dissolving what is
+    left splits the system around it, which is the right answer. Excluding the
+    whole system would discard insertable main; keeping it would claim a run
+    that cannot be threaded end to end.
+    """
+    eligible = frame[schema.GSEP_ELIGIBLE] == 1
+    in_bucket = frame[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER
+    big_enough = frame[schema.INSERTABLE] == 1
+
+    selected = frame[eligible & in_bucket & big_enough].copy()
+    excluded = frame[eligible & in_bucket & ~big_enough]
+
+    log(f"Bucket 1, {config.BUCKET_LOWER}: {len(selected):,} GSEP-eligible mains "
+        f"over {config.MIN_INSERTION_DIAMETER_IN:g}\".")
+    if len(excluded):
+        reasons = excluded[schema.INSERTION_REASON].value_counts().to_dict()
+        log(f"  Held out for bore, GSEP eligible and Lower Pressure but too "
+            f"small to insert into: {len(excluded):,}")
+        for reason in sorted(reasons, key=lambda name: -reasons[name]):
+            log(f"    {reasons[reason]:>8,}  {reason}")
     return selected
 
 
@@ -146,6 +171,9 @@ def _report(frame):
         warn("Plastic ASSETTYPE values are not confirmed, so no plastic main is "
              "GSEP eligible in this run. The candidate count is a lower bound "
              "until config.PLASTIC_ASSETTYPES is filled in.")
+
+    insertable = int((frame[schema.INSERTABLE] == 1).sum())
+    log(f"Insertable (over {config.MIN_INSERTION_DIAMETER_IN:g}\"): {insertable:,}.")
 
     reasons = frame[schema.GSEP_REASON].value_counts().to_dict()
     for reason in sorted(reasons, key=lambda name: -reasons[name]):
