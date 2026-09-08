@@ -154,12 +154,17 @@ def report_funnel(mains, show_where):
         verdict = "eligible" if reason in gsep.ELIGIBLE_REASONS else "excluded"
         log(f"    {count:>9,}  {verdict:9} {reason}")
 
-    log(f"\n  Insertability (over {config.MIN_INSERTION_DIAMETER_IN:g}\" bore), "
-        f"which is a separate test from GSEP eligibility:")
+    log(f"\n  Insertability (bore over {config.MIN_INSERTION_DIAMETER_IN:g}\", or "
+        f"at {config.MIN_INSERTION_DIAMETER_IN:g}\" above "
+        f"{config.INSERTION_ELEVATED_PRESSURE_PSI:g} PSI), which is a separate "
+        f"test from GSEP eligibility:")
     for reason, count in classified[schema.INSERTION_REASON].value_counts().items():
-        verdict = ("insertable" if reason == insertability.REASON_INSERTABLE
-                   else f"excluded  {reason}")
-        log(f"    {count:>9,}  {verdict}")
+        admitted = reason in (insertability.REASON_INSERTABLE,
+                              insertability.REASON_INSERTABLE_AT_ELEVATED)
+        verdict = "insertable" if admitted else "excluded"
+        # The plain "insertable" reason would only repeat the verdict.
+        detail = "" if reason == insertability.REASON_INSERTABLE else reason
+        log(f"    {count:>9,}  {verdict:10}  {detail}".rstrip())
 
     log("\n  Pressure buckets (all mains, before GSEP):")
     for bucket, count in classified[schema.PRESSURE_BUCKET].value_counts().items():
@@ -174,7 +179,7 @@ def report_funnel(mains, show_where):
     other_mains = classify.other_pressure_targets(classified)
 
     log(f"\n  {len(lower_mains):>9,}  bucket 1 mains (GSEP eligible AND Lower "
-        f"Pressure AND over {config.MIN_INSERTION_DIAMETER_IN:g}\")")
+        f"Pressure AND insertable)")
     dropped = classified[
         (classified[schema.GSEP_ELIGIBLE] == 1)
         & (classified[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER)
@@ -229,7 +234,9 @@ def report_funnel(mains, show_where):
         log("\nLower Pressure:\n" + pressure.lower_pressure_where())
         log("\nOther Pressure:\n" + pressure.other_pressure_where())
         log("\nInsertable bore:\n" + insertability.where_clause(
-            resolved.get("diameter") or "nominaldiameter"))
+            resolved.get("diameter") or "nominaldiameter",
+            resolved.get("pressure") or "OPERATINGPRESSURE",
+            resolved.get("pressure_units") or "pressureunits"))
 
 
 def main(argv=None):

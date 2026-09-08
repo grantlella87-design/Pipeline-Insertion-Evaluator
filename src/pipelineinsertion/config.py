@@ -144,8 +144,22 @@ COATED_STEEL_INSTALLED_BEFORE = os.environ.get(
 # replaced by insertion. Folding the two together would make the GSEP counts in
 # the output mean something other than the README says they mean.
 #
-# The test is "greater than", so 4 inch itself is excluded.
+# The test is "greater than", so 4 inch itself is excluded - except above the
+# pressure below.
 MIN_INSERTION_DIAMETER_IN = _float_from_env("PIPEINSERT_MIN_INSERTION_DIAMETER", 4.0)
+
+# ... unless the main runs above this pressure, in which case a main at exactly
+# MIN_INSERTION_DIAMETER_IN is acceptable. Pressure buys back the capacity the
+# narrower carrier pipe gives up, so the same load can be served through a
+# smaller bore. The carve-out is for the minimum itself only: anything below it
+# stays out at any pressure.
+#
+# 2 PSI is also where the Lower Pressure bucket ends, but this is deliberately
+# its own value rather than a reference to LOWER_PRESSURE_MAX_PSI. They are
+# different rules that happen to share a number, and widening a pressure bucket
+# should not silently change which mains can be inserted into.
+INSERTION_ELEVATED_PRESSURE_PSI = _float_from_env(
+    "PIPEINSERT_INSERTION_ELEVATED_PSI", 2.0)
 
 # Plastic is deliberately absent. The README leaves plastic eligibility open
 # until the GSEP program's plastic ASSETTYPE values are confirmed, so no plastic

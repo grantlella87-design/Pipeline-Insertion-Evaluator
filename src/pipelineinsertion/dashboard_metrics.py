@@ -21,7 +21,7 @@ if _PACKAGE_PARENT not in _sys.path:
 
 import math
 
-from pipelineinsertion import config, nearest, schema
+from pipelineinsertion import config, insertability, nearest, schema
 from pipelineinsertion.fields import clean, parse_number
 
 FEET_PER_MILE = 5280.0
@@ -330,6 +330,13 @@ def collect(layers):
     candidate_mains = _numbers(candidates, schema.MAIN_COUNT)
     headroom = pressure_headroom(candidates)
 
+    # Mains admitted at exactly the minimum bore because of their pressure. The
+    # carve-out is narrow enough that its size is worth stating rather than
+    # leaving the reader to assume it is zero or assume it is most of them.
+    at_minimum = sum(
+        1 for value in _values(lower_mains, schema.INSERTION_REASON)
+        if clean(value) == insertability.REASON_INSERTABLE_AT_ELEVATED)
+
     no_target = sum(
         1 for value in _values(near, schema.CANDIDATE_STATUS)
         if clean(value) == nearest.STATUS_NO_TARGET_IN_RANGE)
@@ -348,13 +355,15 @@ def collect(layers):
 
         # --- the funnel, in the order the workflow applies it ---
         "funnel": [
-            (f"GSEP-eligible Lower Pressure mains over "
-             f"{config.MIN_INSERTION_DIAMETER_IN:g}\"", _count(lower_mains)),
+            ("GSEP-eligible, insertable Lower Pressure mains",
+             _count(lower_mains)),
             ("Other Pressure mains (targets)", _count(other_mains)),
             ("Lower Pressure systems", _count(lower_systems)),
             ("Other Pressure systems", _count(other_systems)),
             ("Insertion candidates", candidate_count),
         ],
+
+        "at_minimum_mains": at_minimum,
 
         # --- panels ---
         "status": status_counts(near),
@@ -381,6 +390,7 @@ def collect(layers):
         "other_max_psi": config.OTHER_PRESSURE_MAX_PSI,
         "cast_iron_max_diameter": config.CAST_IRON_MAX_DIAMETER_IN,
         "min_insertion_diameter_in": config.MIN_INSERTION_DIAMETER_IN,
+        "insertion_elevated_psi": config.INSERTION_ELEVATED_PRESSURE_PSI,
         "coated_steel_cutoff": config.COATED_STEEL_INSTALLED_BEFORE,
         "plastic_pending": not config.PLASTIC_ASSETTYPES,
     }
