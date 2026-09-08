@@ -594,7 +594,9 @@ def html_page():
         "+'A candidate is a GSEP-eligible Lower Pressure system within '"
         "+MAX_DISTANCE_FT+' ft of an Other Pressure system at or above its own "
         "pressure.<br/>Click a feature for its attributes and SOURCE_IDS.<br/>'"
-        "+LEGEND_HTML+'<br/><br/>';"
+        "+LEGEND_HTML"
+        "+'<br/><a href=\"/dashboard\" target=\"_blank\" rel=\"noopener\">"
+        "Open the summary dashboard</a><br/><br/>';"
         "for(const key of active){"
         " if(LAYER_NOTES[key]){html+=LAYER_CONFIG[key].label"
         "+': <span class=\"warn\">not available</span> - '+esc(LAYER_NOTES[key])"
@@ -631,6 +633,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_error(404, "Missing Leaflet asset")
                     return
                 self.send_bytes(path.read_bytes(), guess_content_type(path.name))
+            elif parsed.path in ("/dashboard", "/dashboard.html"):
+                # Rebuilt on request rather than cached, so it always describes
+                # the GeoPackage as it is now - the workflow may have re-run
+                # while this server stayed up.
+                from pipelineinsertion import dashboard
+
+                page = dashboard.dashboard_path()
+                if not page.is_file():
+                    dashboard.build()
+                self.send_text(page.read_text(encoding="utf-8"), "text/html")
             elif parsed.path == "/api/layer":
                 query = parse_qs(parsed.query)
                 name = query.get("name", [""])[0]

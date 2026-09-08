@@ -183,15 +183,12 @@ def analyse(lower_systems, other_systems):
 
     rows = []
     for _, system in lower_systems.iterrows():
-        row = {
-            schema.SYSTEM_ID: system[schema.SYSTEM_ID],
-            schema.PRESSURE_BUCKET: system[schema.PRESSURE_BUCKET],
-            schema.SYSTEM_PRESSURE: system[schema.SYSTEM_PRESSURE],
-            schema.SYSTEM_PRESSURE_PSI: system[schema.SYSTEM_PRESSURE_PSI],
-            schema.SYSTEM_PRESSURE_UNITS: system[schema.SYSTEM_PRESSURE_UNITS],
-            schema.MAIN_COUNT: system[schema.MAIN_COUNT],
-            schema.LENGTH_FT: system[schema.LENGTH_FT],
-            schema.SOURCE_IDS: system[schema.SOURCE_IDS],
+        # Every column the system carries, not a fixed list of them. Naming the
+        # columns here meant that anything the dissolve added - the materials,
+        # the install dates, the CP subnetworks - was silently dropped at this
+        # stage, so it reached the system layers and never the candidates.
+        row = {name: value for name, value in system.items() if name != "geometry"}
+        row.update({
             schema.NEAREST_EP_ID: "",
             schema.NEAREST_EP_PRESSURE: None,
             schema.NEAREST_EP_PRESSURE_PSI: None,
@@ -201,8 +198,8 @@ def analyse(lower_systems, other_systems):
             schema.NEAR_Y: None,
             schema.FROM_X: None,
             schema.FROM_Y: None,
-            "geometry": system.geometry,
-        }
+        })
+        row["geometry"] = system.geometry
         found = near_result(system.geometry, targets, tree) if targets else None
         if found:
             row.update(found)
@@ -267,6 +264,9 @@ def _paths_from(near_table):
         if line is None:
             continue
         row = {name: near[name] for name in schema.INSERTION_PATH_FIELDS}
+        for name in schema.SYSTEM_ATTRIBUTE_FIELDS:
+            if name in near_table.columns:
+                row[name] = near[name]
         row[schema.IS_CANDIDATE] = near[schema.IS_CANDIDATE]
         row[schema.CANDIDATE_STATUS] = near[schema.CANDIDATE_STATUS]
         row["geometry"] = line
