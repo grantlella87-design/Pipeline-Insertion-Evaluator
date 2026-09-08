@@ -546,6 +546,34 @@ everywhere. The map vendors Leaflet for exactly this reason; a dashboard that
 pulled a charting library off a CDN would be the one output that stopped
 working on a machine with no internet.
 
+It carries three things worth calling out:
+
+- **Candidate lengths**, binned, with each bin's footage beside its count and
+  the mean, median and range marked. Both averages are given because they
+  disagree: system lengths are heavily right-skewed, so a few long runs pull
+  the mean above the median and a single "average" would misdescribe most of
+  the list.
+- **Total GSEP length**, as a tile and again under the length chart, so the
+  insertable footage is read against the GSEP-eligible population it came from
+  rather than on its own. A length whose CRS is not foot-based reports as "not
+  measurable" rather than as a number - a total in degrees presented as feet is
+  worse than no total, and nothing about the number would show it.
+- **A what-if control on the distance threshold.** Drag or type an exact
+  distance and the section re-totals: how many systems become insertable, how
+  much main that is, and the difference against the distance the run actually
+  used. It scopes that section only - everything above reports the run as
+  configured, so the page never disagrees with the GeoPackage.
+
+The scan carries every system that has a nearest target, not only today's
+candidates - a scan holding only the passes could not answer the question. It
+does not let distance relax the pressure test: a target below the candidate's
+own pressure does not become usable by moving a threshold, so the readout
+separates "insertable" from "within the distance".
+
+The control is the page's only script. It is inline and self-contained - no
+fetch, no library - so the file still behaves when it is emailed or opened from
+a share, and it only re-totals rows already embedded in the page.
+
 Two things about the colour, both of which a chart gets wrong by default:
 
 - Every bar chart on the page is a single series, so every bar is one hue. A
@@ -582,7 +610,7 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-479 tests, none of which need a network, an ArcGIS token or a GIS install. They
+512 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
 and an end-to-end run over a small synthetic network with a known answer -
