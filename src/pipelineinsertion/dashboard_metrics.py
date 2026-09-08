@@ -252,6 +252,11 @@ def gsep_length(layers):
     GSEP-eligible population that reached a bucket. Mains in neither bucket -
     an unknown pressure unit, say - are in no layer and so are not counted;
     `classify` reports that count at run time.
+
+    Mains too small to insert into are included, because they are still GSEP
+    eligible and still get replaced - just not by insertion. This is a GSEP
+    total, not an insertion total, and it is why the bore rule is applied at the
+    dissolve rather than to the bucket 1 layer this reads.
     """
     lower = layers.get(schema.GSEP_LOWER_PRESSURE_LAYER)
     other = layers.get(schema.OTHER_PRESSURE_MAINS_LAYER)
@@ -330,12 +335,23 @@ def collect(layers):
     candidate_mains = _numbers(candidates, schema.MAIN_COUNT)
     headroom = pressure_headroom(candidates)
 
-    # Mains admitted at exactly the minimum bore because of their pressure. The
+    # The bucket 1 layer holds every GSEP-eligible Lower Pressure main, small
+    # ones included - they are still GSEP eligible, just not insertable - so the
+    # insertable count is taken from the reason column rather than from the
+    # layer's own length.
+    reasons = [clean(value) for value in
+               _values(lower_mains, schema.INSERTION_REASON)]
+    insertable_lower = sum(
+        1 for reason in reasons
+        if reason in (insertability.REASON_INSERTABLE,
+                      insertability.REASON_INSERTABLE_AT_ELEVATED))
+
+    # Mains kept at exactly the minimum bore because of their pressure. The
     # carve-out is narrow enough that its size is worth stating rather than
     # leaving the reader to assume it is zero or assume it is most of them.
     at_minimum = sum(
-        1 for value in _values(lower_mains, schema.INSERTION_REASON)
-        if clean(value) == insertability.REASON_INSERTABLE_AT_ELEVATED)
+        1 for reason in reasons
+        if reason == insertability.REASON_INSERTABLE_AT_ELEVATED)
 
     no_target = sum(
         1 for value in _values(near, schema.CANDIDATE_STATUS)
@@ -355,8 +371,8 @@ def collect(layers):
 
         # --- the funnel, in the order the workflow applies it ---
         "funnel": [
-            ("GSEP-eligible, insertable Lower Pressure mains",
-             _count(lower_mains)),
+            ("GSEP-eligible Lower Pressure mains", _count(lower_mains)),
+            ("of those, insertable", insertable_lower),
             ("Other Pressure mains (targets)", _count(other_mains)),
             ("Lower Pressure systems", _count(lower_systems)),
             ("Other Pressure systems", _count(other_systems)),
@@ -364,6 +380,7 @@ def collect(layers):
         ],
 
         "at_minimum_mains": at_minimum,
+        "not_insertable_mains": _count(lower_mains) - insertable_lower,
 
         # --- panels ---
         "status": status_counts(near),

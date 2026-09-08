@@ -258,16 +258,17 @@ class TestClassification:
         assert frame.iloc[0][schema.GSEP_ELIGIBLE] == 1
         assert frame.iloc[0][schema.INSERTABLE] == 0
 
-    def test_small_mains_are_kept_out_of_bucket_one(self):
+    def test_small_mains_are_kept_out_of_the_insertable_selection(self):
         frame = classify.classify(
             make_mains([(config.ASSETTYPE_CAST_IRON, 8, "CP-A", 0),
                         (config.ASSETTYPE_CAST_IRON, 4, "CP-A", 100),
                         (config.ASSETTYPE_COPPER, 2, "CP-A", 200)]),
             RESOLVED, layer_json={})
-        selected = classify.lower_pressure_candidates(frame)
-        assert list(selected[schema.NOMINAL_DIAMETER]) == [8]
+        bucket_one = classify.lower_pressure_candidates(frame)
+        insertable = classify.insertable_mains(bucket_one)
+        assert list(insertable[schema.NOMINAL_DIAMETER]) == [8]
 
-    def test_a_four_inch_main_above_the_pressure_reaches_bucket_one(self):
+    def test_a_four_inch_main_above_the_pressure_is_insertable(self):
         """The carve-out, end to end and still inside Lower Pressure.
 
         58" WC is 2.09 PSI: above the 2 PSI carve-out, below the 60" WC ceiling
@@ -280,9 +281,10 @@ class TestClassification:
             ]),
             RESOLVED, layer_json={})
         assert list(frame[schema.PRESSURE_BUCKET]) == [config.BUCKET_LOWER] * 2
-        selected = classify.lower_pressure_candidates(frame)
-        assert list(selected[schema.CP_SUBNETWORK]) == ["CP-A"]
-        assert list(selected[schema.INSERTION_REASON]) == [
+        insertable = classify.insertable_mains(
+            classify.lower_pressure_candidates(frame))
+        assert list(insertable[schema.CP_SUBNETWORK]) == ["CP-A"]
+        assert list(insertable[schema.INSERTION_REASON]) == [
             insertability.REASON_INSERTABLE_AT_ELEVATED]
 
     def test_the_pressure_tested_is_the_one_the_bucket_was_decided_on(self):
@@ -302,15 +304,67 @@ class TestClassification:
         """Nothing can be confirmed as insertable without a diameter.
 
         Better an empty, explained result than a candidate list built on an
-        untested rule.
+        untested rule. Bare steel rather than cast iron, because cast iron
+        without a diameter is not GSEP eligible either and the point here is a
+        main that is eligible and still cannot be shown to be insertable.
         """
-        frame = make_mains([(config.ASSETTYPE_CAST_IRON, 8, "CP-A", 0)])
+        frame = make_mains([(config.ASSETTYPE_BARE_STEEL, 8, "CP-A", 0)])
         frame = frame.drop(columns=["nominaldiameter"])
         classified = classify.classify(
             frame, dict(RESOLVED, diameter=None), layer_json={})
-        assert len(classify.lower_pressure_candidates(classified)) == 0
+        bucket_one = classify.lower_pressure_candidates(classified)
+        assert len(bucket_one) == 1                       # still GSEP eligible
+        assert len(classify.insertable_mains(bucket_one)) == 0
         assert classified.iloc[0][schema.INSERTION_REASON] == (
             insertability.REASON_NO_DIAMETER)
+
+
+class TestBucketOneKeepsWhatIsNotInsertable:
+    """Small pipe is still GSEP eligible. It just is not insertable.
+
+    The bore rule is applied between bucket 1 and the dissolve, so the
+    GSEP_LPP_LowerPressure layer keeps the whole GSEP-eligible Lower Pressure
+    population. Filtering it there instead would make a layer named and read as
+    the GSEP-eligible population mean "GSEP eligible and insertable", and every
+    GSEP total drawn from its length would under-report by the small mains.
+    """
+
+    @pytest.fixture
+    def bucket_one(self):
+        frame = classify.classify(
+            make_mains([
+                (config.ASSETTYPE_CAST_IRON, 8, "CP-A", 0),     # insertable
+                (config.ASSETTYPE_CAST_IRON, 4, "CP-A", 100),   # low pressure
+                (config.ASSETTYPE_COPPER, 2, "CP-A", 200),      # under the bore
+            ]),
+            RESOLVED, layer_json={})
+        return classify.lower_pressure_candidates(frame)
+
+    def test_the_small_mains_are_still_there(self, bucket_one):
+        assert sorted(bucket_one[schema.NOMINAL_DIAMETER]) == [2, 4, 8]
+
+    def test_they_are_all_still_gsep_eligible(self, bucket_one):
+        assert list(bucket_one[schema.GSEP_ELIGIBLE]) == [1, 1, 1]
+
+    def test_they_are_flagged_as_not_insertable_rather_than_dropped(
+            self, bucket_one):
+        not_insertable = bucket_one[bucket_one[schema.INSERTABLE] == 0]
+        assert sorted(not_insertable[schema.NOMINAL_DIAMETER]) == [2, 4]
+
+    def test_the_gsep_length_counts_the_small_mains(self, bucket_one):
+        """The total the dashboard reports as GSEP-eligible length.
+
+        It is the whole bucket-1 layer's length, so all three mains have to be
+        in it - 300 ft, not the 100 ft that is insertable.
+        """
+        from pipelineinsertion import dashboard_metrics
+
+        totals = dashboard_metrics.gsep_length(
+            {schema.GSEP_LOWER_PRESSURE_LAYER: bucket_one})
+        assert totals["lower_pressure"] == pytest.approx(300.0)
+        insertable = classify.insertable_mains(bucket_one)
+        assert dashboard_metrics.geometry_length_ft(insertable) == (
+            pytest.approx(100.0))
 
 
 class TestASmallSegmentSplitsTheSystem:
@@ -333,8 +387,9 @@ class TestASmallSegmentSplitsTheSystem:
                 (config.ASSETTYPE_CAST_IRON, 8, "CP-A", 200),   # insertable
             ]),
             RESOLVED, layer_json={})
-        return systems.dissolve(classify.lower_pressure_candidates(frame),
-                                "GLOBALID", "legacyid")
+        return systems.dissolve(
+            classify.insertable_mains(classify.lower_pressure_candidates(frame)),
+            "GLOBALID", "legacyid")
 
     def test_the_run_becomes_two_systems(self, dissolved):
         assert len(dissolved) == 2
@@ -362,7 +417,8 @@ class TestASmallSegmentSplitsTheSystem:
             ]),
             RESOLVED, layer_json={})
         dissolved = systems.dissolve(
-            classify.lower_pressure_candidates(frame), "GLOBALID", "legacyid")
+            classify.insertable_mains(classify.lower_pressure_candidates(frame)),
+            "GLOBALID", "legacyid")
         assert len(dissolved) == 1
         assert dissolved.iloc[0][schema.MAIN_COUNT] == 3
         assert dissolved.iloc[0][schema.MIN_DIAMETER] == 4

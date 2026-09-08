@@ -176,24 +176,23 @@ def report_funnel(mains, show_where):
         log(f"    {count:>9,}  {code} = {pressure.unit_label(code) or 'not in the domain'}")
 
     lower_mains = classify.lower_pressure_candidates(classified)
+    insertable_lower = classify.insertable_mains(lower_mains)
     other_mains = classify.other_pressure_targets(classified)
 
     log(f"\n  {len(lower_mains):>9,}  bucket 1 mains (GSEP eligible AND Lower "
-        f"Pressure AND insertable)")
-    dropped = classified[
-        (classified[schema.GSEP_ELIGIBLE] == 1)
-        & (classified[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER)
-        & (classified[schema.INSERTABLE] != 1)
-    ]
-    if len(dropped):
-        log(f"  {len(dropped):>9,}  more passed both of those tests and were held "
-            f"out for bore alone")
+        f"Pressure)")
+    log(f"  {len(insertable_lower):>9,}  of those are insertable, and are what "
+        f"the systems are dissolved from")
+    held_out = len(lower_mains) - len(insertable_lower)
+    if held_out:
+        log(f"  {held_out:>9,}  are held out for bore - still GSEP eligible and "
+            f"still in the bucket 1 layer, just not insertable")
     log(f"  {len(other_mains):>9,}  bucket 2 mains (Other Pressure, any material)")
 
-    if not len(lower_mains):
-        log("\n  Nothing reaches bucket 1, so there can be no candidates. The "
-            "eligibility, insertability and bucket tables above say which test "
-            "excluded them.")
+    if not len(insertable_lower):
+        log("\n  No insertable main reaches bucket 1, so there can be no "
+            "candidates. The eligibility, insertability and bucket tables above "
+            "say which test excluded them.")
         return
     if not len(other_mains):
         log("\n  There are no Other Pressure systems to insert into, so no "
@@ -201,10 +200,12 @@ def report_funnel(mains, show_where):
         return
 
     target_crs = crs.analysis_crs(mains.crs)
-    lower_mains = crs.to_analysis_crs(lower_mains, target_crs, "bucket 1")
+    insertable_lower = crs.to_analysis_crs(insertable_lower, target_crs,
+                                           "bucket 1, insertable")
     other_mains = crs.to_analysis_crs(other_mains, target_crs, "bucket 2")
 
-    lower_systems = systems.dissolve(lower_mains, resolved.get("globalid") or "",
+    lower_systems = systems.dissolve(insertable_lower,
+                                     resolved.get("globalid") or "",
                                      resolved.get("legacyid") or "")
     other_systems = systems.dissolve(other_mains, resolved.get("globalid") or "",
                                      resolved.get("legacyid") or "")

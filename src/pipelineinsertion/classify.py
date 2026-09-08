@@ -123,40 +123,60 @@ def classify(gdf, resolved, domain_labels=None, layer_json=None):
 
 
 def lower_pressure_candidates(frame):
-    """Bucket 1: GSEP-eligible, insertable mains in the Lower Pressure bucket.
+    """Bucket 1: GSEP-eligible mains in the Lower Pressure bucket.
 
-    The size test is applied per main rather than per system, because that is
-    what it physically is. A system of 8 inch mains with one 4 inch segment in
-    the middle cannot be inserted *through* that segment, but the 8 inch runs
-    either side still can - so dropping the small main and dissolving what is
-    left splits the system around it, which is the right answer. Excluding the
-    whole system would discard insertable main; keeping it would claim a run
-    that cannot be threaded end to end.
+    Not filtered on bore. A main too small to insert into is still GSEP
+    eligible and still gets replaced - just not by insertion - so it belongs in
+    this layer and in every GSEP total drawn from it. Removing it here would
+    make GSEP_LPP_LowerPressure mean "GSEP eligible and insertable" while still
+    being named and read as the GSEP-eligible population, and the GSEP length
+    totals computed from it would silently under-report.
 
-    A main at exactly the minimum bore is admitted where its own pressure is
-    above config.INSERTION_ELEVATED_PRESSURE_PSI. Inside this bucket that is a
-    narrow band - Lower Pressure runs to 60" WC, which is 2.17 PSI, so it is the
+    `insertable_mains` applies the bore rule, at the dissolve.
+    """
+    selected = frame[
+        (frame[schema.GSEP_ELIGIBLE] == 1)
+        & (frame[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER)
+    ].copy()
+    log(f"Bucket 1, {config.BUCKET_LOWER}: {len(selected):,} GSEP-eligible mains.")
+    return selected
+
+
+def insertable_mains(frame):
+    """The mains from `frame` that can actually be inserted into.
+
+    Applied between bucket 1 and the dissolve, so the bucket-1 layer keeps the
+    whole GSEP-eligible population and only the systems built for the near
+    analysis are restricted to insertable main.
+
+    Per main rather than per system, because that is what it physically is. A
+    system of 8 inch mains with one 4 inch low-pressure segment in the middle
+    cannot be inserted *through* that segment, but the 8 inch runs either side
+    still can - so dropping the small main and dissolving what is left splits
+    the system around it, which is the right answer. Excluding the whole system
+    would discard insertable main; keeping it would claim a run that cannot be
+    threaded end to end.
+
+    A main at exactly the minimum bore is kept where its own pressure is above
+    config.INSERTION_ELEVATED_PRESSURE_PSI. Inside bucket 1 that is a narrow
+    band - Lower Pressure runs to 60" WC, which is 2.17 PSI, so it is the
     water-column mains above 55.4" WC that qualify.
     """
-    eligible = frame[schema.GSEP_ELIGIBLE] == 1
-    in_bucket = frame[schema.PRESSURE_BUCKET] == config.BUCKET_LOWER
     big_enough = frame[schema.INSERTABLE] == 1
+    selected = frame[big_enough].copy()
+    excluded = frame[~big_enough]
 
-    selected = frame[eligible & in_bucket & big_enough].copy()
-    excluded = frame[eligible & in_bucket & ~big_enough]
-
-    log(f"Bucket 1, {config.BUCKET_LOWER}: {len(selected):,} GSEP-eligible, "
-        f"insertable mains.")
+    log(f"Insertable: {len(selected):,} of {len(frame):,} mains.")
     at_minimum = int((selected[schema.INSERTION_REASON]
                       == insertability.REASON_INSERTABLE_AT_ELEVATED).sum())
     if at_minimum:
-        log(f"  Admitted at exactly {config.MIN_INSERTION_DIAMETER_IN:g}\" "
-            f"because they run above "
+        log(f"  Kept at exactly {config.MIN_INSERTION_DIAMETER_IN:g}\" because "
+            f"they run above "
             f"{config.INSERTION_ELEVATED_PRESSURE_PSI:g} PSI: {at_minimum:,}")
     if len(excluded):
         reasons = excluded[schema.INSERTION_REASON].value_counts().to_dict()
-        log(f"  Held out for bore, GSEP eligible and Lower Pressure but not "
-            f"insertable: {len(excluded):,}")
+        log(f"  Held out for bore - still GSEP eligible, just not insertable: "
+            f"{len(excluded):,}")
         for reason in sorted(reasons, key=lambda name: -reasons[name]):
             log(f"    {reasons[reason]:>8,}  {reason}")
     return selected

@@ -192,7 +192,8 @@ def build_analysis():
 
     frame = gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:2249")
     classified = classify.classify(frame, RESOLVED, layer_json={})
-    lower = systems.dissolve(classify.lower_pressure_candidates(classified),
+    lower = systems.dissolve(classify.insertable_mains(
+                                 classify.lower_pressure_candidates(classified)),
                              "GLOBALID", "legacyid")
     other = systems.dissolve(classify.other_pressure_targets(classified),
                              "GLOBALID", "legacyid")

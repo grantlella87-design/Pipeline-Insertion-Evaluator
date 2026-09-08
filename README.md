@@ -123,27 +123,38 @@ Plastic eligibility should be finalized after confirmation of the applicable pla
 ```sql
 GSEP_ELIGIBLE = 1
 AND (
-    nominaldiameter > 4
-    OR (
-        nominaldiameter = 4
-        AND (
-            (pressureunits = 1 AND OPERATINGPRESSURE > 2)
-            OR
-            (pressureunits = 2 AND OPERATINGPRESSURE > 55.4152)
-        )
-    )
-)
-AND (
     (pressureunits = 2 AND OPERATINGPRESSURE <= 60)
     OR
     (pressureunits = 1 AND OPERATINGPRESSURE <= 2)
 )
 ```
 
+Not filtered on bore. A main too small to insert into is still GSEP eligible and
+still gets replaced, so it belongs in this layer and in every GSEP total drawn
+from it.
+
+### Insertable main, at the dissolve
+
+The systems are dissolved from the mains in this bucket that can actually be
+inserted into:
+
+```sql
+nominaldiameter > 4
+OR (
+    nominaldiameter = 4
+    AND (
+        (pressureunits = 1 AND OPERATINGPRESSURE > 2)
+        OR
+        (pressureunits = 2 AND OPERATINGPRESSURE > 55.4152)
+    )
+)
+```
+
 55.4152" WC is 2 PSI converted at 27.7076" WC per PSI, so the two unit branches
-express one threshold. The bore test is applied to each main, not to the
-dissolved system, and it is separate from GSEP eligibility. See *Insertability
-is a separate test from GSEP eligibility* below.
+express one threshold. Applied to each main, not to the dissolved system, and
+separate from GSEP eligibility - `INSERTABLE` and `INSERTION_REASON` record it
+on every main in the layer, insertable or not. See *Insertability is a separate
+test from GSEP eligibility* below.
 
 ### Pressure Units Domain (7_UPDM_UnitsForPressure)
 
@@ -378,6 +389,10 @@ Contents include:
 | Elevated Pressure Systems | ElevatedPressureSystems |
 | Connection Paths | LPP_GSEP_InsertionPaths |
 | Final Candidates | LPP_GSEP_PipelineInsertionCandidates |
+
+`GSEP_LPP_LowerPressure` holds every GSEP-eligible Lower Pressure main, with
+`INSERTABLE` and `INSERTION_REASON` on each. `LPP_LowerPressure_Systems` is
+dissolved from the insertable ones only.
 
 ---
 
@@ -629,7 +644,7 @@ changes nothing. Add `--where` to print the SQL for each stage.
 python -m pytest
 ```
 
-586 tests, none of which need a network, an ArcGIS token or a GIS install. They
+590 tests, none of which need a network, an ArcGIS token or a GIS install. They
 cover the eligibility rule, the minimum insertable bore and its pressure
 carve-out, the pressure buckets and unit conversion, the
 dissolve and its traceability field, the near analysis and the final selection,
@@ -719,6 +734,20 @@ value rather than a reference to `LOWER_PRESSURE_MAX_PSI`. They are different
 rules that happen to share a number, and widening a pressure bucket should not
 silently change which mains can be inserted into.
 
+### Where the rule is applied
+
+Between bucket 1 and the dissolve, not inside bucket 1. `GSEP_LPP_LowerPressure`
+holds every GSEP-eligible Lower Pressure main, small ones included, each carrying
+its `INSERTABLE` flag; the systems are dissolved from the insertable subset.
+
+Filtering bucket 1 itself would make a layer named and read as the GSEP-eligible
+population mean "GSEP eligible **and** insertable", and the dashboard's total
+GSEP length - which is that layer's whole length, by construction - would
+under-report by exactly the main that is too small to insert into. Small pipe is
+still GSEP eligible. It is just not insertable.
+
+### Why it is not part of GSEP eligibility
+
 It is `insertability.py` rather than another clause in `gsep.py`, and it sets
 its own `INSERTABLE` and `INSERTION_REASON` columns rather than being folded
 into `GSEP_ELIGIBLE`, because the two answer different questions:
@@ -743,9 +772,9 @@ and a merged count would hide which one to go and fix.
 
 ### Applied per main, not per system
 
-Bucket 1 drops mains that fail the bore test before the dissolve, so a system of
-8 inch mains with one low-pressure 4 inch segment in the middle splits into the
-two 8 inch runs either side. That is what the pipe physically does: it cannot be threaded *through* the small
+The dissolve takes only insertable mains, so a system of 8 inch mains with one
+low-pressure 4 inch segment in the middle splits into the two 8 inch runs either
+side. That is what the pipe physically does: it cannot be threaded *through* the small
 segment, but each run beyond it can still be inserted. Excluding the whole
 system would discard insertable main; keeping it whole would claim a run that
 cannot be threaded end to end.

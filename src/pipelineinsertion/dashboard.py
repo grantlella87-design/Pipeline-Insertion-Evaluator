@@ -619,13 +619,26 @@ def render(metrics, table_headers, table_rows, source=None, total_candidates=Non
     rule_html = "".join(f"<li>{escape(rule)}</li>" for rule in rules)
 
     at_minimum_note = ""
+    notes = []
+    if metrics["not_insertable_mains"]:
+        notes.append(
+            f'{metrics["not_insertable_mains"]:,} Lower Pressure mains are too '
+            f'small to insert into. They are still GSEP eligible, still in the '
+            f'{escape(schema.GSEP_LOWER_PRESSURE_LAYER)} layer and still counted '
+            f'in the GSEP length above — they just do not form a system to '
+            f'insert into.')
     if metrics["at_minimum_mains"]:
+        count = metrics["at_minimum_mains"]
+        subject = ("One insertable main is" if count == 1
+                   else f"{count:,} of the insertable mains are")
+        notes.append(
+            f'{subject} at exactly '
+            f'{metrics["min_insertion_diameter_in"]:g}", kept because '
+            f'they run above {metrics["insertion_elevated_psi"]:g} PSI. Anything '
+            f'narrower is excluded at any pressure.')
+    if notes:
         at_minimum_note = (
-            f'<p class="panel-note">'
-            f'{metrics["at_minimum_mains"]:,} of those mains are at exactly '
-            f'{metrics["min_insertion_diameter_in"]:g}", admitted because they '
-            f'run above {metrics["insertion_elevated_psi"]:g} PSI. Anything '
-            f'narrower is excluded at any pressure.</p>')
+            '<p class="panel-note">' + " ".join(notes) + "</p>")
 
     plastic_note = ""
     if metrics["plastic_pending"]:

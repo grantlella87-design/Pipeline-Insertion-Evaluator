@@ -202,7 +202,12 @@ def main():
         other_mains = classify.other_pressure_targets(classified)
 
     with timed("dissolve"):
-        lower_systems = build_systems(lower_mains, resolved, config.BUCKET_LOWER)
+        # Bore is applied here, not to the bucket-1 layer above. A main too
+        # small to insert into is still GSEP eligible and still gets replaced,
+        # so it stays in GSEP_LPP_LowerPressure and in the GSEP totals drawn
+        # from it; it just does not become part of a system to insert into.
+        lower_systems = build_systems(
+            classify.insertable_mains(lower_mains), resolved, config.BUCKET_LOWER)
         other_systems = build_systems(other_mains, resolved, config.BUCKET_OTHER)
 
     step("Finding the nearest Other Pressure system for each candidate")

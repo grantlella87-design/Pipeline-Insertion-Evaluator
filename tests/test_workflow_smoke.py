@@ -66,7 +66,9 @@ def analysed():
     classified = classify.classify(frame, RESOLVED)
     lower_mains = classify.lower_pressure_candidates(classified)
     other_mains = classify.other_pressure_targets(classified)
-    lower_systems = systems.dissolve(lower_mains, "GLOBALID", "legacyid")
+    # The workflow dissolves the insertable subset, not the whole bucket.
+    lower_systems = systems.dissolve(
+        classify.insertable_mains(lower_mains), "GLOBALID", "legacyid")
     other_systems = systems.dissolve(other_mains, "GLOBALID", "legacyid")
     near, paths, candidates = nearest.analyse(lower_systems, other_systems)
     return {
@@ -260,8 +262,10 @@ class TestNoNanGeometryReachesTheMap:
             geometry=[r[5] for r in rows], crs="EPSG:2249")
 
         classified = classify.classify(frame, RESOLVED)
-        lower = systems.dissolve(classify.lower_pressure_candidates(classified),
-                                 "GLOBALID", "legacyid")
+        lower = systems.dissolve(
+            classify.insertable_mains(
+                classify.lower_pressure_candidates(classified)),
+            "GLOBALID", "legacyid")
         other = systems.dissolve(classify.other_pressure_targets(classified),
                                  "GLOBALID", "legacyid")
         near, paths, candidates = nearest.analyse(lower, other)
